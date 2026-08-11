@@ -181,7 +181,13 @@ def extract_emails(start_date: str, end_date: str, namespace=None) -> list:
     return items
 
 
-def extract_meetings(start_date: str, end_date: str, namespace=None) -> list:
+def extract_meetings(start_date: str, end_date: str, namespace=None, include_tentative: bool = False) -> list:
+    """Extract accepted calendar meetings in date range.
+
+    include_tentative: when True, also include meetings marked Tentative (ResponseStatus=1).
+    Organizer-created and explicitly accepted meetings are always included.
+    Declined (4) and not-responded (5) meetings are always excluded.
+    """
     if namespace is None:
         namespace = get_outlook_connection()
 
@@ -247,7 +253,18 @@ def extract_meetings(start_date: str, end_date: str, namespace=None) -> list:
             response_status = getattr(item, "ResponseStatus", 0)
             meeting_status = getattr(item, "MeetingStatus", 2)
             is_organizer = meeting_status in (0, 1)
-            if not is_organizer and response_status not in (0, 2, 3):
+
+            # ETTA-34: skip private meetings (Sensitivity: 0=Normal, 1=Personal, 2=Private, 3=Confidential)
+            if getattr(item, "Sensitivity", 0) == 2:
+                continue
+
+            # Default: include organizer + explicitly accepted (0, 2, 3).
+            # Optional (include_tentative): also include tentative (1).
+            # Always exclude declined (4) and not-responded (5).
+            accepted_statuses = (0, 2, 3)
+            if include_tentative:
+                accepted_statuses = (0, 1, 2, 3)
+            if not is_organizer and response_status not in accepted_statuses:
                 continue
 
             duration_minutes = int(item.Duration) if hasattr(item, "Duration") else 60
@@ -275,7 +292,7 @@ def extract_meetings(start_date: str, end_date: str, namespace=None) -> list:
     return items
 
 
-def run_extract(start_date: str, end_date: str, types: list[str]) -> dict:
+def run_extract(start_date: str, end_date: str, types: list[str], include_tentative: bool = False) -> dict:
     result = {
         "success": True,
         "data": [],
@@ -292,7 +309,7 @@ def run_extract(start_date: str, end_date: str, types: list[str]) -> dict:
         result["counts"]["email"] = len(emails)
 
     if "meeting" in types:
-        meetings = extract_meetings(start_date, end_date, namespace)
+        meetings = extract_meetings(start_date, end_date, namespace, include_tentative=include_tentative)
         result["data"].extend(meetings)
         result["counts"]["meeting"] = len(meetings)
 

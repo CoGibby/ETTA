@@ -36,6 +36,8 @@ interface Settings {
   outlook_backend?: string;
   azure_client_id?: string;
   azure_tenant_id?: string;
+  placeholder_jira_issue?: string;
+  include_tentative_meetings?: string;
   email_short_minutes?: string;
   email_medium_minutes?: string;
   email_long_minutes?: string;
@@ -75,6 +77,8 @@ export default function SettingsPage() {
   // Form state
   const [jiraUrl, setJiraUrl] = useState('');
   const [jiraPat, setJiraPat] = useState('');
+  const [placeholderJiraIssue, setPlaceholderJiraIssue] = useState('PPMO-537');
+  const [includeTentative, setIncludeTentative] = useState(false);
   const [emailShortMinutes, setEmailShortMinutes] = useState('10');
   const [emailMediumMinutes, setEmailMediumMinutes] = useState('20');
   const [emailLongMinutes, setEmailLongMinutes] = useState('30');
@@ -105,6 +109,8 @@ export default function SettingsPage() {
         setSettings(data.settings || {});
         setJiraUrl(data.settings?.jira_url || '');
         setJiraPat(data.settings?.jira_pat || '');
+        setPlaceholderJiraIssue(data.settings?.placeholder_jira_issue || 'PPMO-537');
+        setIncludeTentative(data.settings?.include_tentative_meetings === 'true');
         setOutlookBackend(data.settings?.outlook_backend || 'auto');
         setAzureClientId(data.settings?.azure_client_id || '');
         setAzureTenantId(data.settings?.azure_tenant_id || 'common');
@@ -139,6 +145,8 @@ export default function SettingsPage() {
           outlook_backend: outlookBackend,
           azure_client_id: azureClientId,
           azure_tenant_id: azureTenantId,
+          placeholder_jira_issue: placeholderJiraIssue,
+          include_tentative_meetings: includeTentative ? 'true' : 'false',
           email_short_minutes: emailShortMinutes,
           email_medium_minutes: emailMediumMinutes,
           email_long_minutes: emailLongMinutes,
@@ -159,6 +167,8 @@ export default function SettingsPage() {
   }, [
     jiraUrl,
     jiraPat,
+    placeholderJiraIssue,
+    includeTentative,
     outlookBackend,
     azureClientId,
     azureTenantId,
@@ -587,6 +597,48 @@ export default function SettingsPage() {
               Requires Jira connection above. Favorites are fetched from Tempo and can be used
               as drop targets in the Review tab to quickly assign Jira issues to entries.
             </p>
+          </CardContent>
+        </Card>
+
+        {/* Placeholder Activity */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-xl">Placeholder Activity</CardTitle>
+            <p className="text-base text-slate-500 mt-2">
+              Entries without a Jira code are assigned to this issue so time can be re-assigned later
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <div className="grid gap-3">
+              <Label htmlFor="placeholder-jira" className="text-base">Placeholder Jira Issue Key</Label>
+              <Input
+                id="placeholder-jira"
+                placeholder="PPMO-537"
+                value={placeholderJiraIssue}
+                onChange={(e) => setPlaceholderJiraIssue(e.target.value)}
+              />
+              <p className="text-base text-slate-500">
+                Emails and meetings with no matching keyword or route will be logged against this issue. Leave blank to disable (uncoded entries will have no Jira assignment).
+              </p>
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t">
+              <div>
+                <Label htmlFor="include-tentative" className="text-base">Include tentative meetings</Label>
+                <p className="text-sm text-slate-500 mt-1">
+                  Off by default. When on, meetings you marked Tentative are also imported. Declined meetings are always excluded.
+                </p>
+              </div>
+              <button
+                id="include-tentative"
+                type="button"
+                role="switch"
+                aria-checked={includeTentative}
+                onClick={() => setIncludeTentative(!includeTentative)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${includeTentative ? 'bg-blue-600' : 'bg-slate-200'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition ${includeTentative ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </div>
           </CardContent>
         </Card>
 

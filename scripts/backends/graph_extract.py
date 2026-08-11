@@ -3,7 +3,7 @@ from shared.progress import send_progress
 from graph.outlook_client import get_timekeeper_outlook_client
 
 
-def run_extract(start_date: str, end_date: str, types: list[str]) -> dict:
+def run_extract(start_date: str, end_date: str, types: list[str], include_tentative: bool = False) -> dict:
     result = {
         "success": True,
         "data": [],

@@ -34,9 +34,13 @@ def main() -> None:
     parser.add_argument(
         "--types", default="email,meeting", help="Types to extract (email,meeting)"
     )
+    parser.add_argument(
+        "--include-tentative", default="false", help="Include tentative meetings (true/false)"
+    )
     args = parser.parse_args()
 
     types = [t.strip() for t in args.types.split(",") if t.strip()]
+    include_tentative = args.include_tentative.lower() == "true"
     result = {
         "success": True,
         "data": [],
@@ -49,11 +53,11 @@ def main() -> None:
         if backend == "com":
             from backends.com_extract import run_extract
 
-            result = run_extract(args.start_date, args.end_date, types)
+            result = run_extract(args.start_date, args.end_date, types, include_tentative=include_tentative)
         else:
             from backends.graph_extract import run_extract
 
-            result = run_extract(args.start_date, args.end_date, types)
+            result = run_extract(args.start_date, args.end_date, types, include_tentative=include_tentative)
     except Exception as exc:
         result["success"] = False
         result["errors"].append(str(exc))

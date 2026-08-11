@@ -630,7 +630,7 @@ try {
   // Migration already ran or table doesn't exist yet
 }
 
-export type JiraSource = 'manual' | 'route' | 'source_route' | 'extracted' | null;
+export type JiraSource = 'manual' | 'route' | 'source_route' | 'extracted' | 'placeholder' | null;
 export type ProjectSource = 'manual' | 'keyword' | 'route' | null;
 export type TaskTypeSource = 'manual' | 'keyword' | 'route' | null;
 
@@ -836,16 +836,17 @@ export function clearEntries(): { changes: number } {
 /**
  * Apply routes to existing entries that haven't been manually assigned.
  * This function finds entries where:
- * - jira_source is null or 'route'/'source_route' (not 'manual' or 'extracted')
+ * - jira_source is null or 'route'/'source_route'/'placeholder' (not 'manual' or 'extracted')
  * - project and task_type are both set
  * Then looks up routes and updates jira_issue/jira_source accordingly.
+ * ETTA-34: meetings with no Jira code fall back to the placeholder issue instead of being cleared.
  */
 export function applyRoutesToEntries(): { updated: number; cleared: number } {
   // Get all entries that can have routes applied (not manually assigned or extracted)
   const entries = db.prepare(`
     SELECT id, project, task_type, source_type, jira_issue, jira_source
     FROM entries
-    WHERE (jira_source IS NULL OR jira_source IN ('route', 'source_route'))
+    WHERE (jira_source IS NULL OR jira_source IN ('route', 'source_route', 'placeholder'))
       AND status != 'pushed'
   `).all() as {
     id: number;
@@ -858,6 +859,7 @@ export function applyRoutesToEntries(): { updated: number; cleared: number } {
 
   // Get the route maps
   const { threeField, twoFieldTaskType, twoFieldSourceType, sourceOnlyType } = getUnifiedRouteMap();
+  const placeholderKey = getSetting('placeholder_jira_issue');
 
   let updated = 0;
   let cleared = 0;
@@ -915,7 +917,7 @@ export function applyRoutesToEntries(): { updated: number; cleared: number } {
 
     // Update entry if route found or if we need to clear a stale route assignment
     if (newJiraKey) {
-      // Route found - apply it
+      // Route found - apply it (this upgrades placeholder/route assignments to a real route)
       if (entry.jira_issue !== newJiraKey || entry.jira_source !== newJiraSource) {
         updateStmt.run(newJiraKey, newJiraSource, entry.id);
         updated++;
@@ -924,7 +926,12 @@ export function applyRoutesToEntries(): { updated: number; cleared: number } {
       // No route found but entry had route-assigned jira - clear it
       updateStmt.run(null, null, entry.id);
       cleared++;
+    } else if (!entry.jira_issue && entry.source_type !== 'manual' && placeholderKey) {
+      // ETTA-34: source with no Jira code and no matching route -> assign placeholder
+      updateStmt.run(placeholderKey, 'placeholder', entry.id);
+      updated++;
     }
+    // else: jira_source 'placeholder' with no route stays as placeholder (preserved)
   }
 
   return { updated, cleared };
@@ -1082,6 +1089,8 @@ db.exec(`
 // Set default settings (only if not already set)
 db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('jira_url', 'https://its-pro.ucsd.edu');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('placeholder_jira_issue', 'PPMO-537');
+  INSERT OR IGNORE INTO settings (key, value) VALUES ('include_tentative_meetings', 'false');
 `);
 
 // Seed default task types with keywords (only if table is empty)
@@ -1149,6 +1158,54 @@ export function getSetting(key: string): string | null {
 
 export function setSetting(key: string, value: string): void {
   db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
+}
+
+// Migration (ETTA-34): Recreate entries table to add 'placeholder' to the jira_source CHECK constraint.
+// SQLite cannot ALTER a CHECK constraint, so the table must be rebuilt. Guarded by a settings flag
+// so it runs exactly once. Placed here (after settings table + getSetting/setSetting are defined) and
+// after all entries column-adding ALTERs above, so the rebuild copies every column.
+const placeholderMigrationFlag = getSetting('schema_jira_source_placeholder');
+if (placeholderMigrationFlag !== '1') {
+  // Detect whether the existing CHECK already permits 'placeholder' (fresh DBs: ALTER used the old CHECK).
+  // For pre-existing DBs the CHECK lacks 'placeholder', so rebuild the table.
+  const tableSql = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='entries'`).get() as { sql: string } | undefined;
+  const needsRebuild = !tableSql?.sql?.includes("'placeholder'");
+
+  if (needsRebuild) {
+    db.exec(`
+      BEGIN;
+      CREATE TABLE entries_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+        source_type TEXT NOT NULL CHECK (source_type IN ('email', 'meeting', 'manual')),
+        title TEXT NOT NULL,
+        date TEXT NOT NULL,
+        start_time TEXT,
+        duration_minutes INTEGER NOT NULL DEFAULT 15,
+        jira_issue TEXT,
+        project TEXT,
+        task_type TEXT,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'pushed', 'excluded')),
+        pushed_at TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        context_minutes INTEGER DEFAULT 0,
+        jira_source TEXT CHECK (jira_source IN ('manual', 'route', 'source_route', 'extracted', 'placeholder')),
+        jira_name TEXT,
+        project_source TEXT CHECK (project_source IN ('manual', 'keyword', 'route')),
+        task_type_source TEXT CHECK (task_type_source IN ('manual', 'keyword', 'route'))
+      );
+      INSERT INTO entries_new (id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source)
+        SELECT id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source FROM entries;
+      DROP TABLE entries;
+      ALTER TABLE entries_new RENAME TO entries;
+      CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
+      CREATE INDEX IF NOT EXISTS idx_entries_status ON entries(status);
+      CREATE INDEX IF NOT EXISTS idx_entries_jira ON entries(jira_issue);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_source ON entries(source_id) WHERE source_id IS NOT NULL;
+      COMMIT;
+    `);
+  }
+  setSetting('schema_jira_source_placeholder', '1');
 }
 
 export function getAllSettings(): Record<string, string> {

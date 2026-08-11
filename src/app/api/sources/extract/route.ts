@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
-import { insertSourceIfNew, processStaleSourcesAfterImport } from '@/lib/db';
+import { insertSourceIfNew, processStaleSourcesAfterImport, getSetting } from '@/lib/db';
 import {
   buildOutlookPythonEnv,
   getEffectiveOutlookBackend,
@@ -18,6 +18,7 @@ export async function POST(request: Request) {
 
   const scriptPath = getOutlookScriptPath('outlook_extract.py');
   const backend = getEffectiveOutlookBackend();
+  const includeTentative = getSetting('include_tentative_meetings') === 'true';
 
   if (backend === 'graph') {
     try {
@@ -69,6 +70,8 @@ export async function POST(request: Request) {
           endDate,
           '--types',
           types.join(','),
+          '--include-tentative',
+          includeTentative ? 'true' : 'false',
         ],
         { env: buildOutlookPythonEnv() }
       );

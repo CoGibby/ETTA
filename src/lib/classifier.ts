@@ -183,6 +183,18 @@ export function classifySource(
     }
   }
 
+  // ETTA-34: Placeholder fallback for entries with no Jira code.
+  // Assigns uncoded sources (emails and meetings) to a configurable placeholder issue
+  // so time is captured even when no keyword/route/extraction matched. Lowest precedence:
+  // any manual/route/extracted assignment above wins. Users can reassign after the fact.
+  if (!jiraIssue) {
+    const placeholderKey = getSetting('placeholder_jira_issue');
+    if (placeholderKey) {
+      jiraIssue = placeholderKey;
+      jiraSource = 'placeholder';
+    }
+  }
+
   return { project, projectSource, taskType, taskTypeSource, jiraIssue, jiraSource };
 }
 

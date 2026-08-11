@@ -73,7 +73,7 @@ interface TaskType {
   keywords?: string[];
 }
 
-type JiraSource = 'manual' | 'route' | 'source_route' | 'extracted' | null;
+type JiraSource = 'manual' | 'route' | 'source_route' | 'extracted' | 'placeholder' | null;
 type ProjectSource = 'manual' | 'keyword' | 'route' | null;
 type TaskTypeSource = 'manual' | 'keyword' | 'route' | null;
 
@@ -1612,15 +1612,23 @@ export default function Home() {
                                 <TooltipProvider delayDuration={300}>
                                   <Tooltip>
                                     <TooltipTrigger asChild>
-                                      <span className="inline-flex items-center px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-medium cursor-default">
+                                      <span
+                                        className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium cursor-default ${
+                                          entry.jira_source === 'placeholder'
+                                            ? 'bg-slate-100 text-slate-500 border border-dashed border-slate-400'
+                                            : 'bg-purple-100 text-purple-700'
+                                        }`}
+                                      >
                                         {entry.jira_issue}
                                       </span>
                                     </TooltipTrigger>
-                                    {(entry.jira_name || jiraNameLookup.get(entry.jira_issue)) && (
-                                      <TooltipContent>
+                                    <TooltipContent>
+                                      {entry.jira_source === 'placeholder' ? (
+                                        <p className="max-w-xs">Placeholder assignment — no matching Jira code. Reassign to the correct issue.</p>
+                                      ) : (entry.jira_name || jiraNameLookup.get(entry.jira_issue)) ? (
                                         <p className="max-w-xs">{entry.jira_name || jiraNameLookup.get(entry.jira_issue)}</p>
-                                      </TooltipContent>
-                                    )}
+                                      ) : null}
+                                    </TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
                               ) : (
