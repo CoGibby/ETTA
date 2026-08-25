@@ -43,19 +43,20 @@ interface Props {
   totalHours: number;
   meetingsHours: number;
   setTotalHours: (n: number) => void;
-  setMeetingsHours: (n: number) => void;
   unassigned: { id: number; key: string; name: string }[];
   onAddToActive: (key: string, name: string) => void;
   onRemoveFromActive: (key: string, name: string) => void;
   onDeleteUnassigned: (id: number, key: string) => void;
   onAddProject: () => void;
   dateLabel: string;
+  manualMeetings?: { id: string; title: string; hours: number }[];
+  onRemoveMeeting?: (id: string, hours: number) => void;
 }
 
 export function AllocationCard({
-  rows, setRows, totalHours, meetingsHours, setTotalHours, setMeetingsHours,
+  rows, setRows, totalHours, meetingsHours, setTotalHours,
   unassigned, onAddToActive, onRemoveFromActive, onDeleteUnassigned, onAddProject,
-  dateLabel,
+  dateLabel, manualMeetings, onRemoveMeeting,
 }: Props) {
   const workTime = Math.max(0, totalHours - meetingsHours);
   const anyLocked = rows.some((r) => r.locked);
@@ -224,14 +225,26 @@ export function AllocationCard({
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6, padding: '8px 12px', background: 'var(--slate-100)', borderRadius: 8 }}>
-        <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>-</span>
-        <span style={{ fontSize: 13, color: 'var(--slate-500)', fontWeight: 600 }}>{meetingsHours}h in meetings</span>
-        <span style={{ fontSize: 13, color: 'var(--slate-400)' }}>auto-filled from calendar</span>
-        <input className="input" type="number" min={0} value={meetingsHours}
-          onChange={(e) => setMeetingsHours(parseFloat(e.target.value) || 0)}
-          style={{ width: 48, textAlign: 'center', fontWeight: 700, fontSize: 13, color: 'var(--navy)', marginLeft: 'auto' }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, padding: '8px 12px', background: 'var(--slate-100)', borderRadius: 8 }}>
+        <span style={{ fontSize: 13, color: 'var(--slate-500)', fontWeight: 600 }}>{fmtHrsMin(meetingsHours)} in meetings</span>
+        <span style={{ fontSize: 12, color: 'var(--slate-400)' }}>from calendar</span>
       </div>
+
+      {manualMeetings && manualMeetings.length > 0 && (
+        <div style={{ marginBottom: 6, paddingLeft: 12 }}>
+          {manualMeetings.map((m) => (
+            <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', fontSize: 13, color: 'var(--slate-500)' }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--navy)', flexShrink: 0 }}></span>
+              <span style={{ fontWeight: 500 }}>{m.title}</span>
+              <span style={{ color: 'var(--slate-400)' }}>{fmtHrsMin(m.hours)}</span>
+              {onRemoveMeeting && (
+                <button className="btn btn-secondary btn-sm" style={{ padding: '0 5px', fontSize: 13, lineHeight: 1, marginLeft: 'auto' }}
+                  onClick={() => onRemoveMeeting(m.id, m.hours)} title="Remove meeting">x</button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div style={{ fontSize: 13, color: 'var(--slate-500)', padding: '6px 12px', marginBottom: 14 }}>
         <b style={{ color: 'var(--navy)' }}>{fmtHrsMin(workTime)}</b> to allocate across projects
@@ -295,7 +308,7 @@ export function AllocationCard({
             >x</button>
           </div>
         ))}
-        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>+ Add project</button>
+        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>+ Add project or meeting</button>
       </div>
 
     </div>

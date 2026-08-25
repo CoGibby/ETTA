@@ -416,8 +416,8 @@ export async function pushWorklogs(
   };
 }
 /**
- * Search Jira issues by key or summary using the issue picker API.
- * Returns matching issues for autocomplete.
+ * Search Jira issues by key or summary using JQL.
+ * Returns all matching issues for autocomplete.
  */
 export async function searchJiraIssues(creds: JiraCredentials, query: string): Promise<{
   success: boolean;
@@ -426,7 +426,11 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
 }> {
   try {
     const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
-    const apiUrl = `${cleanBaseUrl}/rest/api/2/issue/picker?query=${encodeURIComponent(query)}`;
+
+    // Build JQL: match by issue key prefix or summary text
+    const safeQuery = query.replace(/"/g, '\"');
+    const jql = `key = "${safeQuery}" OR key ~ "${safeQuery}*" OR summary ~ "${safeQuery}*" ORDER BY updated DESC`;
+    const apiUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary`;
 
     const response = await fetch(apiUrl, {
       method: 'GET',
@@ -454,17 +458,15 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
 
     const data = await response.json();
 
-    // The picker API returns sections with issues
+    // The search API returns issues directly
     const issues: { key: string; summary: string }[] = [];
-    const sections = data.sections || [];
-    for (const section of sections) {
-      for (const issue of (section.issues || [])) {
-        if (issue.key) {
-          issues.push({
-            key: issue.key,
-            summary: issue.summaryText || issue.summary || issue.key,
-          });
-        }
+    const rawIssues = data.issues || [];
+    for (const issue of rawIssues) {
+      if (issue.key) {
+        issues.push({
+          key: issue.key,
+          summary: (issue.fields && issue.fields.summary) || issue.key,
+        });
       }
     }
 

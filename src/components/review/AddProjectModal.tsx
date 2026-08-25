@@ -11,16 +11,20 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onAdded: (key: string, name: string) => void;
+  onAddMeeting?: (title: string, hours: number) => void;
   existingKeys: string[];
 }
 
-export function AddProjectModal({ open, onClose, onAdded, existingKeys }: Props) {
+export function AddProjectModal({ open, onClose, onAdded, existingKeys, onAddMeeting }: Props) {
+  const [tab, setTab] = useState<'jira' | 'meeting'>('jira');
   const [input, setInput] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState('');
   const [validating, setValidating] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
+  const [meetingTitle, setMeetingTitle] = useState('');
+  const [meetingHours, setMeetingHours] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const existingSet = new Set(existingKeys.map((k) => k.toUpperCase()));
@@ -31,6 +35,9 @@ export function AddProjectModal({ open, onClose, onAdded, existingKeys }: Props)
       setResults([]);
       setError('');
       setHighlightIdx(-1);
+      setMeetingTitle('');
+      setMeetingHours('');
+      setTab('jira');
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [open]);
@@ -154,18 +161,51 @@ export function AddProjectModal({ open, onClose, onAdded, existingKeys }: Props)
     }
   };
 
+  const addMeeting = () => {
+    const title = meetingTitle.trim();
+    const hours = parseFloat(meetingHours) || 0;
+    if (!title) { setError('Enter a meeting title.'); return; }
+    if (hours <= 0) { setError('Enter meeting hours.'); return; }
+    if (onAddMeeting) {
+      onAddMeeting(title, hours);
+      onClose();
+    }
+  };
+
   if (!open) return null;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <h3>Add a Jira issue</h3>
-        <p style={{ fontSize: 13.5, color: 'var(--slate-500)', marginBottom: 14 }}>
-          Start typing an issue key (e.g. ETTA-90) and pick from the results.
-        </p>
+        <div style={{ display: 'flex', gap: 0, marginBottom: 16, borderBottom: '1px solid var(--slate-200)' }}>
+          <button
+            style={{
+              padding: '8px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              border: 'none', background: 'none',
+              color: tab === 'jira' ? 'var(--navy)' : 'var(--slate-400)',
+              borderBottom: tab === 'jira' ? '2px solid var(--navy)' : '2px solid transparent',
+            }}
+            onClick={() => setTab('jira')}
+          >Jira issue</button>
+          <button
+            style={{
+              padding: '8px 16px', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              border: 'none', background: 'none',
+              color: tab === 'meeting' ? 'var(--navy)' : 'var(--slate-400)',
+              borderBottom: tab === 'meeting' ? '2px solid var(--navy)' : '2px solid transparent',
+            }}
+            onClick={() => setTab('meeting')}
+          >Meeting</button>
+        </div>
 
-        {/* Search input with dropdown */}
+        {tab === 'jira' && (
+          <>
+          <p style={{ fontSize: 13.5, color: 'var(--slate-500)', marginBottom: 14 }}>
+            Start typing an issue key (e.g. ETTA-90) and pick from the results.
+          </p>
+
+          {/* Search input with dropdown */}
         <div style={{ position: 'relative' }}>
           <input
             ref={inputRef}
@@ -242,6 +282,44 @@ export function AddProjectModal({ open, onClose, onAdded, existingKeys }: Props)
             {validating ? 'Adding...' : 'Add'}
           </button>
         </div>
+          </>
+        )}
+
+        {tab === 'meeting' && (
+          <>
+          <p style={{ fontSize: 13.5, color: 'var(--slate-500)', marginBottom: 14 }}>
+            Add a meeting that is not on your calendar. The hours count toward your total automatically.
+          </p>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Meeting title</label>
+            <input
+              className="input"
+              value={meetingTitle}
+              onChange={(e) => { setMeetingTitle(e.target.value); setError(''); }}
+              placeholder="e.g. Team standup"
+              style={{ width: '100%' }}
+            />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 13, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Duration (hours)</label>
+            <input
+              className="input"
+              type="number"
+              min={0}
+              step={0.5}
+              value={meetingHours}
+              onChange={(e) => { setMeetingHours(e.target.value); setError(''); }}
+              placeholder="e.g. 1.5"
+              style={{ width: 100 }}
+            />
+          </div>
+          {error && <div style={{ fontSize: 13, color: 'var(--danger-600)', marginBottom: 8 }}>{error}</div>}
+          <div className="actions" style={{ marginTop: 16 }}>
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            <button className="btn btn-navy" onClick={addMeeting}>Add meeting</button>
+          </div>
+          </>
+        )}
       </div>
     </div>
   );

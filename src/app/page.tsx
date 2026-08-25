@@ -32,6 +32,7 @@ export default function ReviewPage() {
   const [rows, setRows] = useState<AllocRow[]>([]);
   const [totalHours, setTotalHours] = useState(8);
   const [meetingsHours, setMeetingsHours] = useState(0);
+  const [manualMeetings, setManualMeetings] = useState<{ id: string; title: string; hours: number }[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [weekStats, setWeekStats] = useState({ captured: 0, meetings: 0, pushed: 0, review: 0, autoCoded: 0, total: 0 });
@@ -135,6 +136,11 @@ export default function ReviewPage() {
     refreshFavorites();
   }, [refreshFavorites]);
 
+  const onAddMeeting = useCallback((title: string, hours: number) => {
+    setManualMeetings((prev) => [...prev, { id: 'mtg-' + Date.now(), title, hours }]);
+    setMeetingsHours((prev) => Math.round((prev + hours) * 10) / 10);
+  }, []);
+
   const todayLabel = useMemo(() => {
     const d = new Date();
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
@@ -185,13 +191,17 @@ export default function ReviewPage() {
         totalHours={totalHours}
         meetingsHours={meetingsHours}
         setTotalHours={setTotalHours}
-        setMeetingsHours={setMeetingsHours}
         unassigned={unassigned}
         onAddToActive={onAddToActive}
         onRemoveFromActive={onRemoveFromActive}
         onDeleteUnassigned={onDeleteUnassigned}
         onAddProject={() => setAddOpen(true)}
         dateLabel={todayLabel}
+        manualMeetings={manualMeetings}
+        onRemoveMeeting={(id: string, hours: number) => {
+          setManualMeetings((prev) => prev.filter((m) => m.id !== id));
+          setMeetingsHours((prev) => Math.max(0, Math.round((prev - hours) * 10) / 10));
+        }}
       />
 
       {/* Summary strip */}
@@ -224,6 +234,7 @@ export default function ReviewPage() {
         open={addOpen}
         onClose={() => setAddOpen(false)}
         onAdded={onAddedProject}
+        onAddMeeting={onAddMeeting}
         existingKeys={favorites.map((f) => f.jira_key)}
       />
     </div>
