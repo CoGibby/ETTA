@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'child_process';
-import path from 'path';
 import { insertSourceIfNew, processStaleSourcesAfterImport, getSetting } from '@/lib/db';
+import {
+  buildOutlookPythonEnv,
+  getEffectiveOutlookBackend,
+  getOutlookScriptPath,
+  getPythonCommandForSpawn,
+  runOutlookPythonScript,
+} from '@/lib/outlook-python';
 
 export async function POST(request: Request) {
   const { startDate, endDate, types = ['email', 'meeting'] } = await request.json();
@@ -10,8 +16,42 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, error: 'startDate and endDate required' }, { status: 400 });
   }
 
-  const scriptPath = path.resolve('./scripts/outlook_extract.py');
+  const scriptPath = getOutlookScriptPath('outlook_extract.py');
+  const backend = getEffectiveOutlookBackend();
   const includeTentative = getSetting('include_tentative_meetings') === 'true';
+
+  if (backend === 'graph') {
+    try {
+      const { stdout, code } = await runOutlookPythonScript('outlook_auth.py', [
+        'status',
+      ]);
+      if (code === 0) {
+        const status = JSON.parse(stdout) as { connected?: boolean; configured?: boolean };
+        if (!status.configured) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                'Microsoft Graph is not configured. Add your Azure Client ID in Settings.',
+            },
+            { status: 400 }
+          );
+        }
+        if (!status.connected) {
+          return NextResponse.json(
+            {
+              success: false,
+              error:
+                'Outlook is not connected. Sign in under Settings → Outlook (Microsoft Graph).',
+            },
+            { status: 401 }
+          );
+        }
+      }
+    } catch {
+      // Continue — extract script will surface auth errors if needed
+    }
+  }
 
   // Create a ReadableStream for SSE
   const stream = new ReadableStream({
@@ -20,13 +60,21 @@ export async function POST(request: Request) {
         controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
-      const python = spawn('python', [
-        scriptPath,
-        '--start-date', startDate,
-        '--end-date', endDate,
-        '--types', types.join(','),
-        '--include-tentative', includeTentative ? 'true' : 'false',
-      ]);
+      const python = spawn(
+        getPythonCommandForSpawn(),
+        [
+          scriptPath,
+          '--start-date',
+          startDate,
+          '--end-date',
+          endDate,
+          '--types',
+          types.join(','),
+          '--include-tentative',
+          includeTentative ? 'true' : 'false',
+        ],
+        { env: buildOutlookPythonEnv() }
+      );
 
       let output = '';
       let stderrBuffer = '';
