@@ -41,7 +41,7 @@ export async function POST(request: Request) {
     let finalTaskType = task_type ?? null;
     let finalTaskTypeSource = task_type ? (task_type_source ?? 'manual') : null;
     let finalJiraIssue = jira_issue ?? null;
-    const finalJiraName = jira_name ?? null;
+    let finalJiraName = jira_name ?? null;
     let finalJiraSource = jira_issue ? (jira_source ?? 'manual') : null;
 
     // For manual entries, run classification on title for unfilled fields

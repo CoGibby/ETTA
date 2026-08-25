@@ -19,8 +19,6 @@
 
 # production
 /build
-/artifacts
-/dist-electron
 
 # misc
 .DS_Store
@@ -34,7 +32,6 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
-!.env.example
 
 # vercel
 .vercel
@@ -53,11 +50,7 @@ nul
 *.db
 /data/
 
-# Electron packaging
-/release
-
-# Python
-.venv/
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
