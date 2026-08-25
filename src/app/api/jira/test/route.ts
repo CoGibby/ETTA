@@ -17,11 +17,13 @@ export async function POST(request: Request) {
     return NextResponse.json({
       success: result.success,
       message: result.message,
+      error: result.success ? undefined : result.message,
     });
   } catch (error) {
     console.error('Error testing Jira connection:', error);
+    const msg = error instanceof Error ? error.message : 'Failed to test connection';
     return NextResponse.json(
-      { success: false, error: 'Failed to test connection' },
+      { success: false, error: msg, message: msg },
       { status: 500 }
     );
   }

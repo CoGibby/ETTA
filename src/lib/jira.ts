@@ -1,4 +1,4 @@
-import { getSetting } from './db';
+﻿import { getSetting } from './db';
 
 export interface JiraCredentials {
   baseUrl: string;
@@ -38,6 +38,33 @@ export function getJiraCredentials(): JiraCredentials | null {
 }
 
 /**
+ * Translate a raw fetch/network error into a user-friendly message.
+ */
+function describeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return 'Unknown error.';
+  const cause = (error as Error & { cause?: { code?: string; message?: string } }).cause;
+  const code = cause?.code || '';
+  const msg = error.message || '';
+
+  if (code === 'ENOTFOUND' || msg.includes('getaddrinfo')) {
+    return 'Could not reach that address. Check the URL for typos — it should look like https://its-pro.ucsd.edu (no trailing slash).';
+  }
+  if (code === 'ECONNREFUSED') {
+    return 'The server refused the connection. Verify the URL is correct and that you are on the UCSD network or VPN.';
+  }
+  if (code === 'ECONNRESET' || code === 'ETIMEDOUT' || msg.includes('timeout')) {
+    return 'The connection timed out. The server may be slow or unreachable. Try again, or check your network/VPN connection.';
+  }
+  if (code === 'CERT_HAS_EXPIRED' || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || msg.includes('certificate') || msg.includes('CERT')) {
+    return 'The server certificate could not be verified. Contact your Jira administrator if this persists.';
+  }
+  if (msg === 'fetch failed') {
+    return 'Could not connect to that address. Check the URL, make sure you are on the UCSD network or VPN, and try again.';
+  }
+  return msg;
+}
+
+/**
  * Test Jira connection using the session endpoint
  */
 export async function testJiraConnection(baseUrl: string, token: string): Promise<{
@@ -58,21 +85,29 @@ export async function testJiraConnection(baseUrl: string, token: string): Promis
       },
     });
 
+    const contentType = response.headers.get('content-type') || '';
+
     if (response.status === 404) {
       return {
         success: false,
-        message: 'Invalid Jira API endpoint. Please check your base URL.',
+        message: 'That address does not have a Jira API. Check that you entered the Jira base URL (e.g. https://its-pro.ucsd.edu), not a Tempo or dashboard link.',
       };
     }
 
     if (response.status === 401 || response.status === 403) {
       return {
         success: false,
-        message: 'Authentication failed. Please check your Personal Access Token.',
+        message: 'Your Personal Access Token was rejected. Double-check the token — it must be a Jira Personal Access Token, not your Jira password.',
       };
     }
 
     if (response.ok) {
+      if (!contentType.includes('application/json')) {
+        return {
+          success: false,
+          message: 'The server returned an HTML page instead of a Jira API response. Check that your address is the Jira base URL (e.g. https://its-pro.ucsd.edu), not a Tempo or dashboard link.',
+        };
+      }
       return {
         success: true,
         message: 'Successfully connected to Jira',
@@ -86,7 +121,7 @@ export async function testJiraConnection(baseUrl: string, token: string): Promis
   } catch (error) {
     return {
       success: false,
-      message: error instanceof Error ? error.message : 'Unknown error',
+      message: describeFetchError(error),
     };
   }
 }
@@ -111,38 +146,55 @@ export async function validateJiraIssue(creds: JiraCredentials, issueKey: string
       },
     });
 
+    const contentType = response.headers.get('content-type') || '';
+
     if (response.ok) {
-      const data = await response.json();
-      return {
-        valid: true,
-        jiraName: data.fields?.summary || 'Unknown Issue',
-      };
+      if (!contentType.includes('application/json')) {
+        return {
+          valid: false,
+          error: 'The server returned an HTML page instead of Jira data. Check that your Jira address is the base server URL (e.g. https://its-pro.ucsd.edu), not a Tempo or dashboard link.',
+        };
+      }
+      try {
+        const data = await response.json();
+        return {
+          valid: true,
+          jiraName: data.fields?.summary || 'Unknown Issue',
+        };
+      } catch {
+        return {
+          valid: false,
+          error: 'Could not parse the response from Jira. Check that your Jira address is correct.',
+        };
+      }
     }
 
     // Try to get detailed error message from response
     let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
-    try {
-      const errorData = await response.json();
-      if (errorData.errorMessages?.length > 0) {
-        errorMessage = errorData.errorMessages.join(', ');
-      } else if (errorData.message) {
-        errorMessage = errorData.message;
+    if (contentType.includes('application/json')) {
+      try {
+        const errorData = await response.json();
+        if (errorData.errorMessages?.length > 0) {
+          errorMessage = errorData.errorMessages.join(', ');
+        } else if (errorData.message) {
+          errorMessage = errorData.message;
+        }
+      } catch {
+        // Keep default error message
       }
-    } catch {
-      // Keep default error message
     }
 
     if (response.status === 404) {
       return {
         valid: false,
-        error: errorMessage.includes('does not exist') ? errorMessage : 'Issue not found',
+        error: `Issue ${issueKey} was not found. Check the key and try again.`,
       };
     }
 
     if (response.status === 401 || response.status === 403) {
       return {
         valid: false,
-        error: 'Authentication failed. Please check your credentials.',
+        error: 'Your Jira token does not have permission to view issues. Check your Personal Access Token in Settings.',
       };
     }
 
@@ -153,7 +205,7 @@ export async function validateJiraIssue(creds: JiraCredentials, issueKey: string
   } catch (error) {
     return {
       valid: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: describeFetchError(error),
     };
   }
 }
@@ -249,7 +301,7 @@ export async function addWorklog(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: describeFetchError(error),
     };
   }
 }
@@ -321,7 +373,7 @@ export async function fetchJiraFavorites(creds: JiraCredentials): Promise<{
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
+      error: describeFetchError(error),
     };
   }
 }
@@ -362,4 +414,73 @@ export async function pushWorklogs(
     pushed,
     failed,
   };
+}
+/**
+ * Search Jira issues by key or summary using the issue picker API.
+ * Returns matching issues for autocomplete.
+ */
+export async function searchJiraIssues(creds: JiraCredentials, query: string): Promise<{
+  success: boolean;
+  issues?: { key: string; summary: string }[];
+  error?: string;
+}> {
+  try {
+    const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
+    const apiUrl = `${cleanBaseUrl}/rest/api/2/issue/picker?query=${encodeURIComponent(query)}`;
+
+    const response = await fetch(apiUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${creds.token}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: `Search failed: ${response.statusText}`,
+      };
+    }
+
+    if (!contentType.includes('application/json')) {
+      return {
+        success: false,
+        error: 'Jira returned an unexpected response. Check your server address in Settings.',
+      };
+    }
+
+    const data = await response.json();
+
+    // The picker API returns sections with issues
+    const issues: { key: string; summary: string }[] = [];
+    const sections = data.sections || [];
+    for (const section of sections) {
+      for (const issue of (section.issues || [])) {
+        if (issue.key) {
+          issues.push({
+            key: issue.key,
+            summary: issue.summaryText || issue.summary || issue.key,
+          });
+        }
+      }
+    }
+
+    // Deduplicate by key
+    const seen = new Set<string>();
+    const deduped = issues.filter((i) => {
+      if (seen.has(i.key)) return false;
+      seen.add(i.key);
+      return true;
+    });
+
+    return { success: true, issues: deduped };
+  } catch (error) {
+    return {
+      success: false,
+      error: describeFetchError(error),
+    };
+  }
 }
