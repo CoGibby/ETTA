@@ -27,7 +27,7 @@ interface Route {
 
 export default function SettingsPage() {
   const router = useRouter();
-  const { jiraUrl, email, refresh } = useConnection();
+  const { connected, jiraUrl, email, refresh, refreshOutlook } = useConnection();
   const { projects, taskTypes, refreshAll } = useSharedData();
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
@@ -38,6 +38,9 @@ export default function SettingsPage() {
   const [showServerEdit, setShowServerEdit] = useState(false);
   const [serverInput, setServerInput] = useState('');
   const [serverSaved, setServerSaved] = useState(false);
+  const [outlookStatus, setOutlookStatus] = useState<{ connected: boolean; account: string | null } | null>(null);
+  const [outlookLoading, setOutlookLoading] = useState(false);
+  const [outlookMsg, setOutlookMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [showUnassigned, setShowUnassigned] = useState(false);
 
   const fetchRules = useCallback(async () => {
@@ -76,6 +79,7 @@ export default function SettingsPage() {
   };
 
   const disconnectJira = async () => {
+    // refresh will be called after
     await fetch('/api/settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ jira_url: '', jira_pat: '' }),
@@ -110,6 +114,56 @@ export default function SettingsPage() {
   const visibleKeywords = showUnassigned
     ? [...assignedKeywords, ...unassignedKeywords.slice(0, 20)]
     : assignedKeywords;
+
+  // Fetch Outlook status on mount
+  const refreshOutlookStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/outlook/status');
+      if (res.ok) {
+        const data = await res.json();
+        setOutlookStatus({ connected: data.connected, account: data.account });
+      }
+    } catch { /* ignore */ }
+    await refreshOutlook();
+  }, [refreshOutlook]);
+
+  // Check URL params for Outlook callback results
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('outlook_connected')) {
+      setOutlookMsg({ ok: true, text: 'Outlook connected successfully.' });
+      refreshOutlookStatus();
+      window.history.replaceState({}, '', '/settings');
+    }
+    if (params.get('outlook_error')) {
+      setOutlookMsg({ ok: false, text: decodeURIComponent(params.get('outlook_error') || 'Sign-in failed.') });
+      window.history.replaceState({}, '', '/settings');
+    }
+  }, [refreshOutlookStatus]);
+
+  useEffect(() => { refreshOutlookStatus(); }, [refreshOutlookStatus]);
+
+  const startOutlookConnect = () => {
+    window.location.href = '/api/outlook/auth/start';
+  };
+
+
+
+
+
+  const disconnectOutlook = async () => {
+    setOutlookLoading(true);
+    try {
+      await fetch('/api/outlook/auth/logout', { method: 'POST' });
+      setOutlookStatus({ connected: false, account: null });
+      setOutlookMsg({ ok: true, text: 'Disconnected.' });
+      await refreshOutlook();
+    } catch {
+      setOutlookMsg({ ok: false, text: 'Failed to disconnect.' });
+    } finally {
+      setOutlookLoading(false);
+    }
+  };
 
   return (
     <div style={{ maxWidth: 760, margin: '0 auto' }}>
@@ -194,15 +248,28 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Jira */}
+      {connected && !outlookStatus?.connected && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--blue-50)', border: '1px solid var(--blue-200)', borderRadius: 12, padding: 16, marginBottom: 14 }}>
+          <span style={{ flexShrink: 0, color: 'var(--blue-600)', fontSize: 18, fontWeight: 700 }}>!</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--navy)' }}>Connect your Outlook calendar</div>
+            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>Auto-import your meetings so you don't have to log them manually.</div>
+          </div>
+          <button className="btn btn-navy btn-sm" onClick={startOutlookConnect} disabled={outlookLoading}>
+            {outlookLoading ? 'Starting...' : 'Connect now'}
+          </button>
+        </div>
+      )}
+
+            {/* Jira */}
       <div className="card" style={{ padding: '18px 20px', marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Jira</h3>
-            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>{host || 'Not configured'}{email ? ' - ' + email : ''}</div>
+            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>Server: {host || 'Not configured'}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="status-pill sp-green">Connected</span>
+            <span className="conn-chip green"><span className="dot"></span> Connected</span>
             <button className="btn btn-secondary btn-sm" onClick={disconnectJira}>Disconnect</button>
           </div>
         </div>
@@ -239,13 +306,34 @@ export default function SettingsPage() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div>
             <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Outlook</h3>
-            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>UCSD calendar &amp; mailbox</div>
+            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>{outlookStatus?.connected ? outlookStatus.account || 'UCSD calendar & mailbox' : 'UCSD calendar & mailbox'}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span className="status-pill sp-gray">Coming soon</span>
-            <button className="btn btn-secondary btn-sm" onClick={() => alert('Outlook integration arrives in the next step.')}>Connect Outlook</button>
+            {outlookStatus?.connected ? (
+              <>
+                <span className="conn-chip green"><span className="dot"></span> Connected</span>
+                <button className="btn btn-secondary btn-sm" onClick={disconnectOutlook} disabled={outlookLoading}>Disconnect</button>
+              </>
+            ) : (
+              <>
+                <span className="conn-chip red"><span className="dot"></span> Not connected</span>
+                <button className="btn btn-secondary btn-sm" onClick={startOutlookConnect} disabled={outlookLoading}>
+                  {outlookLoading ? 'Starting...' : 'Connect'}
+                </button>
+              </>
+            )}
           </div>
         </div>
+
+
+        {outlookMsg && (
+          <div style={{
+            marginTop: 10, fontSize: 13,
+            color: outlookMsg.ok ? 'var(--success-600)' : 'var(--danger-600)',
+          }}>
+            {outlookMsg.text}
+          </div>
+        )}
       </div>
 
       {/* Reset */}

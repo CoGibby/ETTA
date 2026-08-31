@@ -15,7 +15,7 @@
 .navlink:hover{color:#fff;}
 .navlink.locked{opacity:.45;cursor:not-allowed;}
 .navlink.active{color:#fff;}
-.conn-chip{display:inline-flex;align-items:center;gap:7px;background:#12263f;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;}
+.conn-chip{display:inline-flex;align-items:center;gap:7px;background:#12263f;color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:999px;padding:6px 12px;font-size:13px;font-weight:600;}
 .conn-chip .dot{width:8px;height:8px;border-radius:999px;}
 .conn-chip.green .dot{background:#57d38a;}
 .conn-chip.red .dot{background:#ff8a85;}

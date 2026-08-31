@@ -7,8 +7,10 @@ interface ConnectionState {
   connecting: boolean;
   email: string | null;
   jiraUrl: string | null;
+  outlookConnected: boolean;
   checking: boolean;
   refresh: () => Promise<void>;
+  refreshOutlook: () => Promise<void>;
   setConnecting: (v: boolean) => void;
 }
 
@@ -20,6 +22,17 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
   const [jiraUrl, setJiraUrl] = useState<string | null>(null);
   const [checking, setChecking] = useState(true);
+  const [outlookConnected, setOutlookConnected] = useState(false);
+
+  const refreshOutlook = useCallback(async () => {
+    try {
+      const res = await fetch('/api/outlook/status');
+      const data = await res.json();
+      setOutlookConnected(!!data.connected);
+    } catch {
+      setOutlookConnected(false);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     setChecking(true);
@@ -36,15 +49,22 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
     } finally {
       setChecking(false);
     }
-  }, []);
+    await refreshOutlook();
+  }, [refreshOutlook]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
+  // Poll Outlook status every 30 seconds so disconnect/connect is reflected everywhere
+  useEffect(() => {
+    const interval = setInterval(refreshOutlook, 30000);
+    return () => clearInterval(interval);
+  }, [refreshOutlook]);
+
   const value = useMemo(() => ({
-    connected, connecting, email, jiraUrl, checking, refresh, setConnecting,
-  }), [connected, connecting, email, jiraUrl, checking, refresh]);
+    connected, connecting, email, jiraUrl, outlookConnected, checking, refresh, refreshOutlook, setConnecting,
+  }), [connected, connecting, email, jiraUrl, outlookConnected, checking, refresh, refreshOutlook]);
 
   return (
     <ConnectionContext.Provider value={value}>

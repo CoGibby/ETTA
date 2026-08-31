@@ -95,15 +95,15 @@ export default function MetricsPage() {
           <div style={{ color: 'var(--slate-400)', fontSize: 13 }}>{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</div>
         </div>
         <div className="card" style={{ padding: 18, background: 'var(--success-50)' }}>
-          <div style={{ color: 'var(--success-600)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Pushed to Jira</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--success-600)', margin: '4px 0' }}>{pushedH}h</div>
+          <div style={{ color: 'var(--navy)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Pushed to Jira</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', margin: '4px 0' }}>{pushedH}h</div>
           <div style={{ color: 'var(--slate-400)', fontSize: 13 }}>{pushedIssues} {pushedIssues === 1 ? 'issue' : 'issues'}</div>
         </div>
         <div className="card" style={{ padding: 18, background: 'var(--gold-50)' }}>
-          <div style={{ color: 'var(--gold-600)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Needs review</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--gold-600)', margin: '4px 0' }}>{reviewH}h</div>
+          <div style={{ color: 'var(--navy)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Needs review</div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', margin: '4px 0' }}>{reviewH}h</div>
           <div style={{ fontSize: 13, marginTop: 2 }}>
-            <Link href="/" className="help-link" style={{ fontWeight: 600 }}>Review now →</Link>
+            <Link href="/" className="help-link" style={{ fontWeight: 600, color: "var(--navy)", borderBottomColor: "var(--slate-300)" }}>Review now →</Link>
           </div>
         </div>
       </div>
@@ -119,7 +119,7 @@ export default function MetricsPage() {
                 <div key={iss.key}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, marginBottom: 4 }}>
                     <span className="issue-key">{iss.key}</span>
-                    <span style={{ color: m.color, fontWeight: 600 }}>
+                    <span style={{ color: 'var(--navy)', fontWeight: 600 }}>
                       <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: m.color, marginRight: 5, verticalAlign: 'middle' }}></span>
                       {iss.hours}h · {m.label}
                     </span>
@@ -130,7 +130,7 @@ export default function MetricsPage() {
             })}
           </div>
           <div style={{ fontSize: 13, color: 'var(--slate-400)', marginTop: 12 }}>
-            Blocked and needs-code hours need attention — <Link href="/" className="help-link">Review now</Link>
+            Blocked and needs-code hours need attention — <Link href="/" className="help-link" style={{ color: "var(--navy)", borderBottomColor: "var(--slate-300)" }}>Review now</Link>
           </div>
         </div>
       )}
@@ -140,15 +140,15 @@ export default function MetricsPage() {
         <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 12 }}>Where your time came from</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {[
-            { pill: 'sp-navy', label: 'Calendar', h: toH(calMins), count: calCount, barColor: 'var(--blue-50)', barBorder: 'var(--blue-200)' },
-            { pill: 'sp-gold', label: 'Email', h: toH(emailMins), count: emailCount, barColor: 'var(--gold-50)', barBorder: '#eed9a0' },
-            { pill: 'sp-gray', label: 'Manual', h: toH(manualMins), count: entries.filter((e) => e.source_type === 'manual').length, barColor: 'var(--slate-200)', barBorder: 'var(--slate-200)' },
+            { pill: 'sp-gray', label: 'Calendar', h: toH(calMins), count: calCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
+            { pill: 'sp-gray', label: 'Email', h: toH(emailMins), count: emailCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
+            { pill: 'sp-gray', label: 'Manual', h: toH(manualMins), count: entries.filter((e) => e.source_type === 'manual').length, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
           ].map((s, i) => {
             const maxH = Math.max(0.1, toH(calMins), toH(emailMins), toH(manualMins));
             return (
             <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className={'status-pill ' + s.pill}>{s.label}</span>
-              <span style={{ fontSize: 13, color: 'var(--slate-500)', minWidth: 80 }}>{s.h}h{s.count > 0 ? ' - ' + s.count + ' ' + (s.count === 1 ? 'entry' : 'entries') : ''}</span>
+              <span style={{ fontSize: 13, color: 'var(--navy)', minWidth: 80 }}>{s.h}h{s.count > 0 ? ' - ' + s.count + ' ' + (s.count === 1 ? 'entry' : 'entries') : ''}</span>
               {s.h > 0 && <div className="bar" style={{ background: s.barColor, border: '1px solid ' + s.barBorder, width: Math.max(8, (s.h / maxH) * 180) + 'px', height: 8 }} />}
             </div>
             );

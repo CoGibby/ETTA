@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+﻿import { NextResponse } from 'next/server';
 import { getJiraCredentials, pushWorklogs, WorklogInput } from '@/lib/jira';
 import { getEntry, bulkUpdateEntries } from '@/lib/db';
 
@@ -16,11 +16,17 @@ export async function POST(request: Request) {
 
   isPushInProgress = true;
   try {
-    const { entryIds } = await request.json();
+    const { entryIds, worklogs: directWorklogs } = await request.json();
 
-    if (!entryIds || !Array.isArray(entryIds) || entryIds.length === 0) {
+    // Allow two modes:
+    // 1. entryIds ? push DB entries by their IDs
+    // 2. worklogs ? push direct worklog objects (from allocation bars)
+    const hasEntryIds = entryIds && Array.isArray(entryIds) && entryIds.length > 0;
+    const hasDirectWorklogs = Array.isArray(directWorklogs) && directWorklogs.length > 0;
+
+    if (!hasEntryIds && !hasDirectWorklogs) {
       return NextResponse.json(
-        { success: false, error: 'entryIds array required' },
+        { success: false, error: 'Provide entryIds or worklogs to push.' },
         { status: 400 }
       );
     }
@@ -38,7 +44,7 @@ export async function POST(request: Request) {
     const worklogs: { entryId: number; worklog: WorklogInput }[] = [];
     const skipped: { entryId: number; reason: string }[] = [];
 
-    for (const entryId of entryIds) {
+    for (const entryId of (entryIds || [])) {
       const entry = getEntry(entryId);
 
       if (!entry) {
@@ -67,10 +73,25 @@ export async function POST(request: Request) {
       });
     }
 
+    if (worklogs.length === 0 && Array.isArray(directWorklogs) && directWorklogs.length > 0) {
+      // Direct worklogs from allocation bars (no DB entries)
+      const validWorklogs = directWorklogs.filter((w: WorklogInput) => w.issueKey && w.timeSpentMinutes > 0);
+      if (validWorklogs.length === 0) {
+        return NextResponse.json({ success: false, error: 'No valid worklogs to push' });
+      }
+      const result = await pushWorklogs(creds, validWorklogs);
+      return NextResponse.json({
+        success: result.pushed > 0,
+        pushed: result.pushed,
+        failed: result.failed,
+        error: result.failed > 0 ? `${result.failed} worklogs failed to push.` : undefined,
+      });
+    }
+
     if (worklogs.length === 0) {
       return NextResponse.json({
         success: false,
-        error: 'No valid entries to push',
+        error: 'No valid entries to push. Entries may be missing a Jira issue or already pushed.',
         skipped,
       });
     }

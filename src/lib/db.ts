@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+﻿import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
@@ -1237,6 +1237,9 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_favorites_jira_key ON favorites(jira_key);
 `);
+
+// Migration: Add is_meeting column to favorites table
+try { db.exec(`ALTER TABLE favorites ADD COLUMN is_meeting INTEGER NOT NULL DEFAULT 0`); } catch { /* column exists */ }
 
 export interface Favorite {
   id: number;

@@ -64,14 +64,14 @@ function pillFor(st: CellStatus): [string, string] {
   return ['sp-red', 'Blocked'];
 }
 
-export function CalendarSection() {
+export function CalendarSection({ open, setOpen }: { open: boolean; setOpen: (v: boolean) => void }) {
   const [weekOffset, setWeekOffset] = useState(0);
   const [selIdx, setSelIdx] = useState(0);
   const [days, setDays] = useState<DayData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [open, setOpen] = useState(false);
   const [pushing, setPushing] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  const [tempoByDay, setTempoByDay] = useState<Record<string, { issueKey: string; minutes: number }[]>>({});
   const today = new Date();
   const gridRef = useRef<HTMLDivElement>(null);
 
@@ -95,8 +95,34 @@ export function CalendarSection() {
         built.push({ date: fmtDate(d), entries: map[dateKey(d)] || [] });
       }
       setDays(built);
+
+      // Fetch Tempo worklogs for the same week to detect already-logged entries
+      try {
+        const tempoRes = await fetch('/api/jira/tempo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dateFrom: toIso(mon), dateTo: toIso(sun) }),
+        });
+        const tempoData = await tempoRes.json();
+        if (tempoData.success && tempoData.entries) {
+          const byDay: Record<string, { issueKey: string; minutes: number }[]> = {};
+          for (const t of tempoData.entries) {
+            const rawDate = t.date || '';
+            const dayPart = rawDate.length >= 10 ? rawDate.substring(0, 10) : rawDate;
+            const d = new Date(dayPart + 'T00:00:00');
+            const k = dateKey(d);
+            (byDay[k] = byDay[k] || []).push({ issueKey: (t.issueKey || '').toUpperCase(), minutes: t.minutes || 0 });
+          }
+          setTempoByDay(byDay);
+        } else {
+          setTempoByDay({});
+        }
+      } catch {
+        setTempoByDay({});
+      }
     } catch {
       setDays([]);
+      setTempoByDay({});
     } finally {
       setLoading(false);
     }
@@ -142,7 +168,7 @@ export function CalendarSection() {
   const pushReady = async () => {
     const day = days[selIdx];
     if (!day) return;
-    const ready = day.entries.filter((e) => statusOf(e) === 'local').map((e) => e.id);
+    const ready = day.entries.filter((e) => statusOf(e) === 'local' && !isAlreadyInTempo(e, day.entries)).map((e) => e.id);
     if (ready.length === 0) return;
     setPushing(true);
     try {
@@ -157,19 +183,48 @@ export function CalendarSection() {
   };
 
   const selDay = days[selIdx];
-  const readyCount = selDay ? selDay.entries.filter((e) => statusOf(e) === 'local').length : 0;
+
+  // Check if a calendar entry was already manually logged in Tempo.
+  // Uses the same multi-strategy matching as the allocation page:
+  // 1. Exact issue key match
+  // 2. Same project prefix (e.g. SVCOPS-652 matches SVCOPS-648)
+  // 3. Tempo total for the day >= total entry time (day fully covered)
+  const isAlreadyInTempo = (entry: ApiEntry, dayEntries: ApiEntry[]): boolean => {
+    const d = new Date(entry.date + 'T00:00:00');
+    const k = dateKey(d);
+    const tempoEntries = tempoByDay[k];
+    if (!tempoEntries || tempoEntries.length === 0) return false;
+
+    const entryKey = (entry.jira_issue || '').toUpperCase();
+    const entryProject = entryKey.indexOf('-') > 0 ? entryKey.substring(0, entryKey.indexOf('-')) : '';
+    const tempoKeys = new Set(tempoEntries.map((t) => t.issueKey));
+    const tempoProjects = new Set(tempoEntries.map((t) => {
+      const dash = t.issueKey.indexOf('-');
+      return dash > 0 ? t.issueKey.substring(0, dash) : t.issueKey;
+    }));
+
+    if (entryKey && tempoKeys.has(entryKey)) return true;
+    if (entryProject && tempoProjects.has(entryProject)) return true;
+
+    // Total coverage: Tempo captured at least as much time as all coded entries
+    const tempoTotalMin = tempoEntries.reduce((s, t) => s + t.minutes, 0);
+    const codedTotalMin = dayEntries
+      .filter((e) => e.jira_issue && e.status !== 'pushed' && e.status !== 'excluded')
+      .reduce((s, e) => s + e.duration_minutes + (e.context_minutes || 0), 0);
+    if (tempoTotalMin > 0 && tempoTotalMin >= codedTotalMin) return true;
+
+    return false;
+  };
+
+  const readyCount = selDay ? selDay.entries.filter((e) => statusOf(e) === 'local' && !isAlreadyInTempo(e, selDay.entries)).length : 0;
 
   return (
     <>
-      <div className={'detail-toggle' + (open ? ' open' : '')} onClick={() => setOpen(!open)}>
-        <span className="arrow">▶</span> Review meeting details
-      </div>
       <div className={'detail-toggle-body' + (open ? ' open' : '')}>
-        <div className="callegend" aria-label="Calendar status legend">
-          <span><i className="sw" style={{ background: 'var(--success-50)', border: '1px solid #bfe5cd' }}></i> Pushed to Jira</span>
-          <span><i className="sw" style={{ background: 'var(--blue-50)', border: '1px solid var(--blue-200)' }}></i> Has a code, ready to push</span>
-          <span><i className="sw" style={{ background: 'var(--gold-50)', border: '1px solid #eed9a0' }}></i> Needs a code</span>
-          <span><i className="sw" style={{ background: 'var(--danger-50)', border: '1px solid #f2c2bf' }}></i> Blocked</span>
+        <div className="callegend" aria-label="Calendar status legend" style={{ display: 'flex', justifyContent: 'center', gap: 0, fontSize: 12, color: 'var(--slate-500)', marginBottom: 10, background: 'var(--slate-100)', borderRadius: 8, padding: '6px 14px' }}>
+          <span style={{ flex: 1, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}><i className="sw" style={{ background: 'var(--blue-50)', border: '1px solid var(--blue-200)' }}></i> Ready</span>
+          <span style={{ flex: 1, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}><i className="sw" style={{ background: 'var(--success-50)', border: '1px solid #bfe5cd' }}></i> In Jira</span>
+          <span style={{ flex: 1, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5 }}><i className="sw" style={{ background: 'var(--gold-50)', border: '1px solid #eed9a0' }}></i> Needs code</span>
         </div>
         <div className="calhead">
           <div className="weeknav">
@@ -213,7 +268,7 @@ export function CalendarSection() {
                       <div className="dhead"><span className="ddow">{day.date.sdow}</span><span className="dnum">{day.date.num}</span></div>
                       <div className="dsum">{total > 0 ? total + 'h' : 'No entries'}</div>
                       {day.entries.slice(0, 4).map((en, i) => (
-                        <div key={i} className={'ent st-' + statusOf(en)}>
+                        <div key={i} className={'ent st-' + (isAlreadyInTempo(en, day.entries) ? 'cloud' : statusOf(en))}>
                           {en.title}
                           <div className="row2">{en.source_type} · {Math.round((en.duration_minutes + (en.context_minutes || 0)) / 60 * 10) / 10}h</div>
                         </div>
@@ -251,10 +306,12 @@ export function CalendarSection() {
                                   <div style={{ fontWeight: 600 }}>{e.title}</div>
                                   <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>{e.source_type}</div>
                                 </td>
-                                <td><span className={'status-pill ' + pillCls}>{pillLabel}</span></td>
+                                <td><span className={'status-pill ' + (isAlreadyInTempo(e, selDay.entries) ? 'sp-green' : pillCls)}>{isAlreadyInTempo(e, selDay.entries) ? 'In Jira' : pillLabel}</span></td>
                                 <td>
                                   {st === 'cloud' ? (
                                     <span className="issue-key">{e.jira_issue}</span>
+                                  ) : isAlreadyInTempo(e, selDay.entries) ? (
+                                    <span className="issue-key">{e.jira_issue || '--'}</span>
                                   ) : (
                                     <JiraInput entry={e} onSave={(issue) => updateEntry(e.id, { jira_issue: issue, jira_source: 'manual' })} />
                                   )}
@@ -262,7 +319,8 @@ export function CalendarSection() {
                                 <td>{hrs}h</td>
                                 <td>
                                   {st === 'cloud' && <span className="status-pill sp-green">Pushed</span>}
-                                  {st === 'local' && <button className="btn btn-primary btn-sm" disabled={pushing} onClick={() => pushEntry(e.id)}>Push</button>}
+                                  {st === 'local' && isAlreadyInTempo(e, selDay.entries) && <span className="status-pill sp-green">In Jira</span>}
+                                  {st === 'local' && !isAlreadyInTempo(e, selDay.entries) && <button className="btn btn-primary btn-sm" disabled={pushing} onClick={() => pushEntry(e.id)}>Push</button>}
                                   {st === 'need' && <span className="status-pill sp-gold">Needs code</span>}
                                   {st === 'block' && <span className="status-pill sp-red">Blocked</span>}
                                 </td>

@@ -157,6 +157,13 @@ export async function validateJiraIssue(creds: JiraCredentials, issueKey: string
       }
       try {
         const data = await response.json();
+        const issueTypeName = (data.fields?.issuetype?.name || '').toLowerCase();
+        if (issueTypeName === 'epic' || issueTypeName === 'milestone' || issueTypeName === 'requirement') {
+          return {
+            valid: false,
+            error: `Time cannot be logged to ${issueTypeName}s. Choose a task, bug, or story instead.`,
+          };
+        }
         return {
           valid: true,
           jiraName: data.fields?.summary || 'Unknown Issue',
@@ -421,68 +428,214 @@ export async function pushWorklogs(
  */
 export async function searchJiraIssues(creds: JiraCredentials, query: string): Promise<{
   success: boolean;
-  issues?: { key: string; summary: string }[];
+  issues?: { key: string; summary: string; updated?: string; timeestimate?: number }[];
   error?: string;
 }> {
   try {
     const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
-
-    // Build JQL: match by issue key prefix or summary text
     const safeQuery = query.replace(/"/g, '\"');
-    const jql = `key = "${safeQuery}" OR key ~ "${safeQuery}*" OR summary ~ "${safeQuery}*" ORDER BY updated DESC`;
-    const apiUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary`;
 
-    const response = await fetch(apiUrl, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${creds.token}`,
-        'Accept': 'application/json',
-      },
-    });
+    const headers = {
+      'Authorization': `Bearer ${creds.token}`,
+      'Accept': 'application/json',
+    };
 
-    const contentType = response.headers.get('content-type') || '';
+    // Step 1: Collect candidate keys from two sources in parallel:
+    //   a) Issue picker API — partial key matching (e.g. "ett" finds ETTA-34)
+    //   b) JQL summary search — text matching (e.g. "TIM" finds issues mentioning TIM)
+    const pickerUrl = `${cleanBaseUrl}/rest/api/2/issue/picker?query=${encodeURIComponent(query)}&showSubTasks=true&showSubTaskParent=true`;
+    const jql = `summary ~ "${safeQuery}*" ORDER BY updated DESC`;
+    const searchUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,updated,issuetype`;
 
-    if (!response.ok) {
-      return {
-        success: false,
-        error: `Search failed: ${response.statusText}`,
-      };
-    }
+    const [pickerRes, searchRes] = await Promise.allSettled([
+      fetch(pickerUrl, { method: 'GET', headers }),
+      fetch(searchUrl, { method: 'GET', headers }),
+    ]);
 
-    if (!contentType.includes('application/json')) {
-      return {
-        success: false,
-        error: 'Jira returned an unexpected response. Check your server address in Settings.',
-      };
-    }
+    const candidateKeys = new Set<string>();
 
-    const data = await response.json();
-
-    // The search API returns issues directly
-    const issues: { key: string; summary: string }[] = [];
-    const rawIssues = data.issues || [];
-    for (const issue of rawIssues) {
-      if (issue.key) {
-        issues.push({
-          key: issue.key,
-          summary: (issue.fields && issue.fields.summary) || issue.key,
-        });
+    // Collect keys from picker
+    if (pickerRes.status === 'fulfilled' && pickerRes.value.ok) {
+      const ct = pickerRes.value.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await pickerRes.value.json();
+        const sections = data.sections || [];
+        for (const section of sections) {
+          for (const issue of (section.issues || [])) {
+            if (issue.key) candidateKeys.add(issue.key);
+          }
+        }
       }
     }
 
-    // Deduplicate by key
-    const seen = new Set<string>();
-    const deduped = issues.filter((i) => {
-      if (seen.has(i.key)) return false;
-      seen.add(i.key);
-      return true;
+    // Collect keys from JQL summary search
+    if (searchRes.status === 'fulfilled' && searchRes.value.ok) {
+      const ct = searchRes.value.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await searchRes.value.json();
+        for (const issue of (data.issues || [])) {
+          if (issue.key) candidateKeys.add(issue.key);
+        }
+      }
+    }
+
+    if (candidateKeys.size === 0) {
+      return { success: true, issues: [] };
+    }
+
+    // Step 2: Batch-fetch full issue details (including issuetype) for ALL candidate keys.
+    // This is the critical step — every result goes through a JQL query that returns
+    // issuetype, so epics and milestones can NEVER appear in the final results.
+    // Keys are batched in groups of 40 to avoid URL length limits on Jira Server.
+    const allKeys = Array.from(candidateKeys);
+    const batches: string[][] = [];
+    for (let i = 0; i < allKeys.length; i += 40) {
+      batches.push(allKeys.slice(i, i + 40));
+    }
+
+    const verified: { key: string; summary: string; updated: string; timeestimate?: number }[] = [];
+    for (const batch of batches) {
+      try {
+        const keyList = batch.join(',');
+        const batchJql = `key in (${keyList}) ORDER BY updated DESC`;
+        const batchUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(batchJql)}&maxResults=100&fields=summary,updated,issuetype,aggregatetimeestimate,timeestimate`;
+        const batchRes = await fetch(batchUrl, { method: 'GET', headers });
+        if (batchRes.ok) {
+          const batchData = await batchRes.json();
+          for (const issue of (batchData.issues || [])) {
+            const issueType = (issue.fields?.issuetype?.name || '').toLowerCase();
+            // Filter out epics and milestones — time cannot be logged to these
+            if (issueType === 'epic' || issueType === 'milestone' || issueType === 'requirement') continue;
+            verified.push({
+              key: issue.key,
+              summary: (issue.fields && issue.fields.summary) || issue.key,
+              updated: (issue.fields && issue.fields.updated) || '',
+              timeestimate: (issue.fields && (issue.fields.timeestimate ?? issue.fields.aggregatetimeestimate)) ?? 0,
+            });
+          }
+        }
+      } catch {
+        // If a batch fails, skip those keys rather than showing unverified results
+      }
+    }
+
+    // Step 3: Sort — key prefix matches first, then by updated date (newest first)
+    const upperQuery = query.toUpperCase();
+    const sorted = verified.sort((a, b) => {
+      const aKeyMatch = a.key.toUpperCase().startsWith(upperQuery) ? 0 : 1;
+      const bKeyMatch = b.key.toUpperCase().startsWith(upperQuery) ? 0 : 1;
+      if (aKeyMatch !== bKeyMatch) return aKeyMatch - bKeyMatch;
+      const aDate = a.updated || '';
+      const bDate = b.updated || '';
+      return bDate.localeCompare(aDate);
     });
 
-    return { success: true, issues: deduped };
+    return { success: true, issues: sorted };
   } catch (error) {
     return {
       success: false,
       error: describeFetchError(error),
     };
+  }
+}
+/**
+ * Fetch total minutes already logged in Tempo Timesheets for a date range.
+ * Used to prevent double-logging time that is already in Jira.
+ */
+export async function fetchTempoWorklogs(creds: JiraCredentials, dateFrom: string, dateTo: string): Promise<{
+  success: boolean;
+  totalMinutes?: number;
+  entries?: { issueKey: string; minutes: number; date: string; comment: string }[];
+  error?: string;
+}> {
+  try {
+    const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
+
+    // Get the current user's username (Jira Server uses username, not accountId)
+    const userRes = await fetch(`${cleanBaseUrl}/rest/api/2/myself`, {
+      headers: { 'Authorization': `Bearer ${creds.token}`, 'Accept': 'application/json' },
+    });
+    if (!userRes.ok) {
+      return { success: false, error: 'Could not fetch Jira user info.' };
+    }
+    const userData = await userRes.json();
+    const username = userData.name || userData.key || userData.accountId;
+    if (!username) {
+      return { success: false, error: 'Could not determine Jira user.' };
+    }
+
+    // Tempo Timesheets v3 API for Jira Server/DC
+    const tempoUrl = `${cleanBaseUrl}/rest/tempo-timesheets/3/worklogs?username=${encodeURIComponent(username)}&dateFrom=${dateFrom}&dateTo=${dateTo}`;
+    const tempoRes = await fetch(tempoUrl, {
+      headers: { 'Authorization': `Bearer ${creds.token}`, 'Accept': 'application/json' },
+    });
+
+    const contentType = tempoRes.headers.get('content-type') || '';
+    if (!tempoRes.ok) {
+      return { success: false, error: `Tempo request failed: ${tempoRes.statusText}` };
+    }
+    if (!contentType.includes('application/json')) {
+      return { success: false, error: 'Tempo returned an unexpected response.' };
+    }
+
+    const worklogs = await tempoRes.json();
+    const entries = (worklogs || []).map((w: any) => ({
+      issueKey: w.issue?.key || w.issueKey || '',
+      minutes: w.timeSpentSeconds ? Math.round(w.timeSpentSeconds / 60) : 0,
+      date: w.dateStarted || w.startDate || '',
+      comment: w.comment || '',
+    }));
+
+    const totalMinutes = entries.reduce((s: number, e: any) => s + e.minutes, 0);
+    return { success: true, totalMinutes, entries };
+  } catch (error) {
+    return { success: false, error: describeFetchError(error) };
+  }
+}
+/**
+ * Validate all favorite issue keys against Jira in a single batch.
+ * Returns keys that are ineligible (epic/milestone) or no longer exist in Jira.
+ * Used to keep the favorites list clean as issues change type or get deleted.
+ */
+export async function validateFavorites(
+  creds: JiraCredentials,
+  keys: string[]
+): Promise<{
+  success: boolean;
+  ineligible?: { key: string; reason: string }[];
+  error?: string;
+}> {
+  if (keys.length === 0) return { success: true, ineligible: [] };
+  try {
+    const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
+    const keyList = keys.map((k) => k.toUpperCase()).join(',');
+    const jql = `key in (${keyList})`;
+    const url = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,issuetype`;
+    const res = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${creds.token}`, 'Accept': 'application/json' },
+    });
+    if (!res.ok) {
+      return { success: false, error: `Jira request failed: ${res.statusText}` };
+    }
+    const data = await res.json();
+    const foundKeys = new Set<string>();
+    const ineligible: { key: string; reason: string }[] = [];
+    for (const issue of (data.issues || [])) {
+      foundKeys.add((issue.key || '').toUpperCase());
+      const issueType = (issue.fields?.issuetype?.name || '').toLowerCase();
+      if (issueType === 'epic' || issueType === 'milestone') {
+        ineligible.push({ key: issue.key, reason: `This issue is a ${issueType} — time cannot be logged to it.` });
+      }
+    }
+    // Any keys not found in the results were deleted or don't exist
+    for (const k of keys) {
+      const upper = k.toUpperCase();
+      if (!foundKeys.has(upper)) {
+        ineligible.push({ key: k, reason: 'This issue no longer exists in Jira.' });
+      }
+    }
+    return { success: true, ineligible };
+  } catch (error) {
+    return { success: false, error: describeFetchError(error) };
   }
 }

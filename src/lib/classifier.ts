@@ -1,4 +1,4 @@
-import { getProjectKeywordMap, getTaskTypeKeywordMap, getUnifiedRouteMap, getSetting, JiraSource, ProjectSource, TaskTypeSource } from './db';
+﻿import { getProjectKeywordMap, getTaskTypeKeywordMap, getUnifiedRouteMap, getSetting, JiraSource, ProjectSource, TaskTypeSource } from './db';
 
 export interface ClassificationResult {
   project: string | null;
@@ -256,7 +256,7 @@ export function calculateMeetingDuration(startTime: string, endTime: string): nu
  * Round duration to 15-minute increments
  */
 export function roundToQuarterHour(minutes: number): number {
-  return Math.ceil(minutes / 15) * 15;
+  return Math.round(minutes / 15) * 15;
 }
 
 /**

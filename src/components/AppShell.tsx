@@ -13,15 +13,17 @@ import { useConnection } from '@/lib/connection-context';
 const DEFAULT_JIRA_URL = 'https://its-pro.ucsd.edu';
 
 function ConnChip() {
-  const { connected, email, jiraUrl, checking } = useConnection();
+  const { connected, outlookConnected, checking } = useConnection();
   if (checking) {
     return <span className="conn-chip off"><span className="dot"></span> Checking...</span>;
   }
-  if (!connected) {
+  if (!connected && !outlookConnected) {
     return <span className="conn-chip off"><span className="dot"></span> Not connected</span>;
   }
-  const host = jiraUrl ? jiraUrl.replace(/^https?:\/\//, '').replace(/\/$/, '') : 'Jira';
-  return <span className="conn-chip green"><span className="dot"></span> Connected to {host} as {email}</span>;
+  const parts: string[] = [];
+  if (connected) parts.push('Jira');
+  if (outlookConnected) parts.push('Outlook');
+  return <span className="conn-chip green"><span className="dot"></span> Connected to {parts.join(' & ')}</span>;
 }
 
 /**
@@ -119,6 +121,32 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       )}
+      <BottomStatus />
+    </div>
+  );
+}
+
+// ============== Bottom status bar ==============
+
+function BottomStatus() {
+  const { connected, outlookConnected, checking } = useConnection();
+  const parts: string[] = [];
+  if (connected) parts.push('Jira');
+  if (outlookConnected) parts.push('Outlook');
+  return (
+    <div style={{
+      position: 'fixed', bottom: 0, left: 0, right: 0,
+      background: 'var(--navy)', color: '#fff',
+      padding: '6px 28px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 8,
+      zIndex: 100,
+    }}>
+      {checking ? (
+        <><span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--slate-400)', display: 'inline-block' }}></span> Checking...</>
+      ) : parts.length === 0 ? (
+        <><span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--slate-400)', display: 'inline-block' }}></span> Not connected</>
+      ) : (
+        <><span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--success-400)', display: 'inline-block' }}></span> Connected to {parts.join(' & ')}</>
+      )}
     </div>
   );
 }
@@ -127,11 +155,12 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<void>; setConnecting: (v: boolean) => void }) {
   const router = useRouter();
+  const { outlookConnected, refreshOutlook } = useConnection();
   const [pat, setPat] = useState('');
   const [showPat, setShowPat] = useState(false);
+  const [outlookSkipped, setOutlookSkipped] = useState(false);
   const [testing, setTesting] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const [outlookConnected, setOutlookConnected] = useState(false);
   const [serverUrl, setServerUrl] = useState(DEFAULT_JIRA_URL);
 
   // Load the server URL from settings (seeded in the database)
@@ -170,9 +199,10 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jira_url: serverUrl, jira_pat: pat }),
       });
-      setMsg({ ok: true, text: 'Connected. Taking you to Review...' });
+      setMsg({ ok: true, text: 'Connected to Jira.' });
       setConnecting(true);
       await onSuccess();
+      // Redirect to review page
       setTimeout(() => router.push('/'), 600);
     } catch {
       setMsg({ ok: false, text: 'Network error. Please try again.' });
@@ -194,23 +224,22 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
       <div className="card" style={{ padding: 24 }}>
         <div style={{ maxWidth: 480, margin: '0 auto' }}>
           <div>
-            {/* Server info - read-only, not an input */}
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              background: 'var(--slate-100)', border: '1px solid var(--slate-200)',
-              borderRadius: 10, padding: '12px 14px', marginBottom: 18,
-            }}>
-              <span style={{
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                width: 32, height: 32, borderRadius: 8, background: 'var(--blue-50)',
-                color: 'var(--blue-600)', fontSize: 15, fontWeight: 700, flexShrink: 0,
-              }}>J</span>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--navy)' }}>Connecting to {serverHost}</div>
-                <div style={{ fontSize: 12.5, color: 'var(--slate-500)' }}>
-                  UCSD Jira server - need a different one? Change it in Settings after connecting.
-                </div>
-              </div>
+            {/* Server URL - editable, pre-filled with UCSD default */}
+            <label className="field-label" htmlFor="cUrl">Jira server address</label>
+            <p style={{ color: 'var(--slate-500)', fontSize: 13.5, marginBottom: 8 }}>
+              Pre-filled with the UCSD Jira server. Change it only if you use a different Jira instance.
+            </p>
+            <div style={{ position: 'relative', marginBottom: 18 }}>
+              <input
+                id="cUrl"
+                className="input"
+                
+                value={serverUrl}
+                onChange={(e) => setServerUrl(e.target.value)}
+                placeholder="https://its-pro.ucsd.edu"
+                autoComplete="off"
+                spellCheck={false}
+              />
             </div>
 
             <label className="field-label" htmlFor="cPat">Your Jira token</label>
@@ -241,26 +270,48 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
             </div>
 
             <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--slate-200)' }}>
-              <label className="field-label" htmlFor="cOutlook">Connect Outlook</label>
-              <p style={{ color: 'var(--slate-500)', fontSize: 13.5, marginBottom: 8 }}>
-                Fills your weekly calendar from your UCSD Outlook (non-private events only).
-              </p>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => { setOutlookConnected(true); alert('Outlook connection will be available in the next step.'); }}
-                >
-                  {outlookConnected ? 'Reconnect Outlook' : 'Connect Outlook'}
-                </button>
-                <span className="status-pill sp-gray">{outlookConnected ? 'Connected' : 'Not connected'}</span>
+              {outlookConnected || outlookSkipped ? (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {outlookConnected ? (
+                    <>
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--success-400)', display: 'inline-block' }}></span>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--success-600)' }}>Successfully connected to Outlook</span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 13, color: 'var(--slate-400)' }}>Outlook skipped ? you can connect it later in Settings.</span>
+                  )}
+                </div>
+              ) : (
+                <>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--navy)' }}>Connect Outlook (optional)</span>
+                <span style={{ fontSize: 13, color: 'var(--slate-400)' }}>Auto-import your calendar meetings</span>
               </div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => { window.location.href = '/api/outlook/auth/start'; }}
+                >
+                  Connect Outlook
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  style={{ textTransform: 'none', letterSpacing: 0 }}
+                  onClick={() => { if (pat) { finishConnect(); } else { setOutlookSkipped(true); } }}
+                >
+                  Skip for now
+                </button>
+                </div>
+              </>
+              )}
             </div>
 
             <div style={{ marginTop: 22, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
               <button className="btn btn-navy btn-lg" onClick={finishConnect} disabled={testing || !pat}>
                 {testing ? 'Testing...' : 'Test & Connect'}
               </button>
-              <span style={{ color: 'var(--slate-500)', fontSize: 13 }}>Tests, saves, and opens Review.</span>
             </div>
             {msg && (
               <div
@@ -281,6 +332,7 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
           </div>
         </div>
       </div>
+      <BottomStatus />
     </div>
   );
 }
