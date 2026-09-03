@@ -17,9 +17,14 @@
     "start": "electron .",
     "package": "npm run build && electron-builder --dir",
     "package:win": "npm run build && electron-builder --win nsis",
+    "package:win:internal": "npm run build && electron-builder --win nsis --config.win.signAndEditExecutable=false",
     "package:mac": "npm run build && electron-builder --mac dmg",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
+    "pretest": "node scripts/clean-test-db.mjs",
+    "test": "concurrently --success first --kill-others \"npm:test:web\" \"npm:test:api\"",
+    "test:web": "cross-env DB_PATH=./data/test-smoke.db next dev --hostname 127.0.0.1 --port 3100",
+    "test:api": "wait-on tcp:127.0.0.1:3100 && cross-env TEST_BASE_URL=http://127.0.0.1:3100 node --test tests/smoke.test.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

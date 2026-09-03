@@ -17,10 +17,10 @@ The production desktop application starts the Next.js standalone server on a pri
 
 ## Development
 
-Prerequisites for the current migration stage:
+Prerequisites:
 
 - Node.js 18 or newer
-- Python 3.9 or newer for the legacy Outlook helper
+- Windows Build Tools with the Visual Studio C++ workload for native modules and installer packaging
 
 ```powershell
 npm install
@@ -31,6 +31,14 @@ npm run dev
 ```
 
 The Electron window waits for the Next.js development server at `http://127.0.0.1:3000`.
+
+## Tests
+
+```powershell
+npm test
+```
+
+The smoke suite starts an isolated Next.js server on port 3100 and uses a temporary SQLite database. It does not require live Jira or Outlook credentials.
 
 ## Builds
 
@@ -43,8 +51,10 @@ npm run package:win
 
 Windows installer output is written to `artifacts/`.
 
-## Migration status
+For an internal PPMO test build, use `npm run package:win:internal`, then follow the [PPMO testing guide](docs/ppmo-testing.md) for checksum generation, clean-machine validation, and known limitations.
 
-The desktop shell and installer structure are in place. Microsoft Graph still runs through the existing Python helper and will be migrated to Node.js/TypeScript. Until that port is complete, packaged Outlook import requires a bundled Python helper; development can use `.venv`.
+## Current status
+
+The desktop shell, TypeScript Microsoft Graph connector, and Windows installer configuration are in place. The supported desktop path no longer requires Python. Remaining release work includes packaged redirect validation, signing, clean-machine installer testing, and update/rollback behavior.
 
 See [docs/architecture.md](docs/architecture.md) for the target architecture and remaining work.
