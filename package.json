@@ -17,6 +17,7 @@
     "start": "electron .",
     "package": "npm run build && electron-builder --dir",
     "package:win": "npm run build && electron-builder --win nsis",
+    "package:win:internal": "npm run build && electron-builder --win nsis --config.win.signAndEditExecutable=false",
     "package:mac": "npm run build && electron-builder --mac dmg",
     "lint": "eslint",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",

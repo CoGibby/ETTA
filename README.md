@@ -51,6 +51,8 @@ npm run package:win
 
 Windows installer output is written to `artifacts/`.
 
+For an internal PPMO test build, use `npm run package:win:internal`, then follow the [PPMO testing guide](docs/ppmo-testing.md) for checksum generation, clean-machine validation, and known limitations.
+
 ## Current status
 
 The desktop shell, TypeScript Microsoft Graph connector, and Windows installer configuration are in place. The supported desktop path no longer requires Python. Remaining release work includes packaged redirect validation, signing, clean-machine installer testing, and update/rollback behavior.
