@@ -70,12 +70,22 @@
 .app-root.settings .settings-page .collapse-body{padding:0 24px 24px;}
 .app-root.settings .settings-page h3{font-size:16.5px;}
 .app-root.settings .settings-page .card{padding:22px 24px;}
-.app-root.settings .settings-connections{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;}
+.app-root.settings .settings-connections{display:grid;grid-template-columns:1fr;gap:18px;}
 .app-root.settings .settings-connections .card{margin-bottom:0;}
 .app-root.settings .settings-page .table{width:100%;}
+/* Metrics and Settings remain proportionally enlarged, but leave comfortable page margins. */
+.app-root.metrics .etta-frame.fluid,
+.app-root.settings .etta-frame.fluid{
+  width:min(100%, 70vw);
+  max-width:1360px;
+  margin:24px auto 60px;
+  border-left:1px solid var(--slate-200);
+  border-right:1px solid var(--slate-200);
+  border-radius:20px;
+  box-shadow:var(--shadow-lg);
+}
 @media (max-width: 1150px){
   .app-root.metrics .metrics-columns{grid-template-columns:1fr;}
-  .app-root.settings .settings-connections{grid-template-columns:1fr;}
 }
 @media (max-width: 760px){
   .app-root.metrics .metrics-summary{grid-template-columns:1fr;}
@@ -134,8 +144,6 @@
 .day{background:#fff;border:1px solid var(--slate-200);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:6px;min-height:132px;cursor:pointer;}
 .day:hover{border-color:var(--blue-600);box-shadow:var(--shadow);}
 .day.selected{border-color:var(--blue-600);box-shadow:0 0 0 3px rgba(0,106,150,.18);}
-.day.today .dnum{color:var(--gold-600);}
-.day.today .dnum::after{content:"\2022";color:var(--gold-600);margin-left:3px;font-size:13px;}
 .day .dhead{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;}
 .day .dnum{font-weight:700;color:var(--navy);font-size:13px;}
 .day .ddow{color:var(--slate-500);font-weight:600;}

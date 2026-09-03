@@ -109,6 +109,7 @@ export default function ReviewPage() {
   const [weekStatuses, setWeekStatuses] = useState({ inJira: 0, ready: 0, needsCode: 0 });
   const [hasData, setHasData] = useState(false);
   const [dataRefreshToken, setDataRefreshToken] = useState(0);
+  const hasLoadedOnceRef = useRef(false);
   const [estimates, setEstimates] = useState<Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>>({});
   const statsRequestRef = useRef(0);
   const estimatesRef = useRef(estimates);
@@ -193,9 +194,11 @@ export default function ReviewPage() {
 
   const fetchStats = useCallback(async () => {
     const requestId = ++statsRequestRef.current;
-    setLoading(true);
-    setTempoHours(0);
-    setMeetingsHours(0);
+    if (!hasLoadedOnceRef.current) setLoading(true);
+    if (!hasLoadedOnceRef.current) {
+      setTempoHours(0);
+      setMeetingsHours(0);
+    }
     const mon = mondayOf(0);
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     const selectedIso = toIso(selectedDate);
@@ -438,6 +441,7 @@ export default function ReviewPage() {
     } finally {
       if (requestId === statsRequestRef.current) {
         setLoading(false);
+        hasLoadedOnceRef.current = true;
         setDataRefreshToken((token) => token + 1);
       }
     }
@@ -446,10 +450,8 @@ export default function ReviewPage() {
   useEffect(() => {
     const refresh = () => fetchStats();
     const interval = setInterval(refresh, 300000);
-    window.addEventListener('focus', refresh);
     return () => {
       clearInterval(interval);
-      window.removeEventListener('focus', refresh);
     };
   }, [fetchStats]);
 
