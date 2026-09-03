@@ -1,7 +1,7 @@
 ﻿import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { getSetting, setSetting } from '@/lib/db';
+import { getSetting } from '@/lib/db';
 
 // ---------- Config ----------
 
@@ -32,15 +32,18 @@ function getScopes(): string[] {
 }
 
 function getDataDir(): string {
-  return path.resolve('./data');
+  const dataDir = process.env.ETTA_DATA_DIR;
+  return dataDir ? path.resolve(dataDir) : path.resolve('./data');
 }
 
 function getCachePath(): string {
-  return path.join(getDataDir(), 'msal_cache.json');
+  const cachePath = process.env.MSAL_CACHE_PATH;
+  return cachePath ? path.resolve(cachePath) : path.join(getDataDir(), 'msal_cache.json');
 }
 
 function getDeviceFlowPath(): string {
-  return path.join(getDataDir(), 'outlook_device_flow.json');
+  const flowPath = process.env.MSAL_FLOW_PATH;
+  return flowPath ? path.resolve(flowPath) : path.join(getDataDir(), 'outlook_device_flow.json');
 }
 
 function ensureDataDir(): void {
@@ -375,6 +378,41 @@ interface GraphItem {
   external_id?: string;
 }
 
+type GraphRecord = Record<string, unknown>;
+
+interface GraphPage<T> {
+  value?: T[];
+  '@odata.nextLink'?: string;
+}
+
+interface GraphBody {
+  content?: string;
+  contentType?: string;
+}
+
+interface GraphEmailMessage extends GraphRecord {
+  subject?: string;
+  sentDateTime?: string;
+  body?: GraphBody;
+}
+
+interface GraphCalendarEvent extends GraphRecord {
+  isCancelled?: boolean;
+  isAllDay?: boolean;
+  showAs?: string;
+  categories?: string[];
+  subject?: string;
+  attendees?: unknown[];
+  onlineMeeting?: unknown;
+  body?: GraphBody;
+  responseStatus?: { response?: string };
+  isOrganizer?: boolean;
+  start?: { dateTime?: string };
+  end?: { dateTime?: string };
+  iCalUId?: string;
+  seriesMasterId?: string;
+}
+
 async function graphHeaders(): Promise<Record<string, string>> {
   const token = await getAccessToken();
   return {
@@ -383,9 +421,9 @@ async function graphHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function paginate(url: string): Promise<any[]> {
+async function paginate<T extends GraphRecord>(url: string): Promise<T[]> {
   const headers = await graphHeaders();
-  const all: any[] = [];
+  const all: T[] = [];
   let currentUrl = url;
 
   while (currentUrl) {
@@ -393,7 +431,7 @@ async function paginate(url: string): Promise<any[]> {
     if (!res.ok) {
       throw new Error(`Graph API error: ${res.status} ${res.statusText}`);
     }
-    const data = await res.json();
+    const data = (await res.json()) as GraphPage<T>;
     if (data.value) {
       all.push(...data.value);
     }
@@ -431,7 +469,7 @@ export async function fetchSentEmails(
   const select = encodeURIComponent('subject,body,sentDateTime');
   const url = `https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$filter=${encodeURIComponent(filterQuery)}&$select=${select}&$top=50&$orderby=sentDateTime%20desc`;
 
-  const messages = await paginate(url);
+  const messages = await paginate<GraphEmailMessage>(url);
   const items: GraphItem[] = [];
   let scanned = 0;
 
@@ -471,7 +509,7 @@ export async function fetchSentEmails(
   return items;
 }
 
-function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
+function includeCalendarEvent(event: GraphCalendarEvent, includeTentative: boolean): boolean {
   if (event.isCancelled) return false;
   if (event.isAllDay) return false;
   if (String(event.showAs || '').toLowerCase() === 'free') return false;
@@ -528,7 +566,7 @@ export async function fetchCalendarEvents(
   const select = encodeURIComponent('subject,body,start,end,responseStatus,isOrganizer,isCancelled,isAllDay,iCalUId,seriesMasterId,attendees,categories,onlineMeeting,showAs');
   const url = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(startIso)}&endDateTime=${encodeURIComponent(endExclusive)}&$select=${select}&$top=50`;
 
-  const events = await paginate(url);
+  const events = await paginate<GraphCalendarEvent>(url);
   const items: GraphItem[] = [];
   let scanned = 0;
 

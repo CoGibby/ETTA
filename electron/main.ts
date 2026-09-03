@@ -68,6 +68,7 @@ async function startPackagedServer(): Promise<string> {
       NODE_ENV: "production",
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
+      ETTA_DATA_DIR: dataDirectory,
       DB_PATH: path.join(dataDirectory, "timekeeper.db"),
       MSAL_CACHE_PATH: path.join(dataDirectory, "msal-cache.json"),
       MSAL_FLOW_PATH: path.join(dataDirectory, "outlook-device-flow.json"),
