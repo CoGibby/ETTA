@@ -26,6 +26,16 @@ Generate a checksum before sharing the artifact:
 Get-FileHash artifacts/ETTA-Time-Tracker-Setup-<version>-x64.exe -Algorithm SHA256
 ```
 
+## Automated Windows Sandbox test
+
+If Windows Sandbox is installed, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/start-windows-sandbox-test.ps1
+```
+
+The test maps the repository read-only, installs the internal build, verifies both health endpoints, confirms per-user files, uninstalls the app, and writes the result to `artifacts/sandbox-results/result.log`.
+
 ## Clean-machine test checklist
 
 Perform these tests on a clean Windows user profile, Windows Sandbox, or a clean Windows VM. Do not use a developer machine as the only test environment.
