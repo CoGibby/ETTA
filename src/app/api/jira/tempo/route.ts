@@ -1,5 +1,7 @@
 ﻿import { NextResponse } from 'next/server';
 import { getJiraCredentials, fetchTempoWorklogs } from '@/lib/jira';
+import { setSetting } from '@/lib/db';
+import { reconcilePushedEntries } from '@/lib/tempo-reconcile';
 
 export async function POST(request: Request) {
   try {
@@ -21,8 +23,14 @@ export async function POST(request: Request) {
     }
 
     const result = await fetchTempoWorklogs(creds, dateFrom, dateTo);
+    if (result.success && result.username) {
+      setSetting('jira_username', result.username);
+    }
+    const reconciliation = result.success
+      ? reconcilePushedEntries(dateFrom, dateTo, result.entries || [])
+      : undefined;
 
-    return NextResponse.json(result);
+    return NextResponse.json({ ...result, reconciliation });
   } catch (error) {
     console.error('Error fetching Tempo worklogs:', error);
     const msg = error instanceof Error ? error.message : 'Failed to fetch Tempo worklogs';

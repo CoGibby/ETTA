@@ -102,7 +102,10 @@ function computePkceChallenge(verifier: string): string {
   return base64UrlEncode(hash);
 }
 
-export function buildAuthUrl(redirectUri: string): string {
+export function buildAuthUrl(
+  redirectUri: string,
+  options: { prompt?: 'select_account' } = {}
+): string {
   const clientId = getClientId();
   if (!clientId) {
     throw new Error('Azure Client ID is not configured.');
@@ -124,6 +127,9 @@ export function buildAuthUrl(redirectUri: string): string {
     code_challenge_method: 'S256',
     response_mode: 'query',
   });
+  if (options.prompt) {
+    params.set('prompt', options.prompt);
+  }
 
   return `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize?${params.toString()}`;
 }
@@ -403,6 +409,11 @@ function shouldSkipEmailSubject(subject: string): boolean {
   return (
     lower.startsWith('automatic reply') ||
     lower.startsWith('auto:') ||
+    lower.startsWith('accepted:') ||
+    lower.startsWith('declined:') ||
+    lower.startsWith('tentative:') ||
+    lower.startsWith('canceled:') ||
+    lower.startsWith('cancelled:') ||
     lower.startsWith('out of office') ||
     lower.startsWith('undeliverable') ||
     lower.startsWith('delivery status notification')
@@ -460,19 +471,46 @@ export async function fetchSentEmails(
   return items;
 }
 
-function includeCalendarEvent(event: any): boolean {
+function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
   if (event.isCancelled) return false;
   if (event.isAllDay) return false;
+  if (String(event.showAs || '').toLowerCase() === 'free') return false;
 
-  // Skip generic "Busy" placeholder events (used to block off non-work time)
+  const categories = (event.categories || []).map((category: string) => String(category).toLowerCase());
+
+  // Skip generic placeholders and explicitly personal events.
   const subject = (event.subject || '').trim().toLowerCase();
-  if (subject === 'busy' || subject === 'free' || subject === 'tentative' || subject === 'out of office') {
+  if (
+    subject === 'busy' ||
+    subject === 'free' ||
+    subject === 'tentative' ||
+    subject === 'out of office' ||
+    subject === 'oof' ||
+    subject === 'unavailable' ||
+    subject === 'blocked' ||
+    subject === 'do not schedule'
+  ) {
+    return false;
+  }
+
+  if (categories.some((category: string) => category.includes('personal') || category.includes('non-work'))) {
+    return false;
+  }
+
+  // ETTA imports meetings and emails, not individual focus blocks. Keep
+  // attendee-less appointments only when they explicitly reference a Jira issue.
+  const hasAttendees = Array.isArray(event.attendees) && event.attendees.length > 0;
+  const hasOnlineMeeting = !!event.onlineMeeting;
+  const text = `${event.subject || ''} ${event.body?.content || ''}`;
+  const hasJiraReference = /\b[A-Z]+-\d+\b/i.test(text);
+  if (!hasAttendees && !hasOnlineMeeting && !hasJiraReference) {
     return false;
   }
 
   const response = event.responseStatus?.response || '';
   if (event.isOrganizer) return true;
-  return response === 'accepted' || response === 'organizer';
+  if (response === 'accepted' || response === 'organizer') return true;
+  return includeTentative && response === 'tentative';
 }
 
 export async function fetchCalendarEvents(
@@ -487,7 +525,7 @@ export async function fetchCalendarEvents(
   endDateObj.setUTCDate(endDateObj.getUTCDate() + 1);
   const endExclusive = endDateObj.toISOString();
 
-  const select = encodeURIComponent('subject,body,start,end,responseStatus,isOrganizer,isCancelled,isAllDay,iCalUId,seriesMasterId');
+  const select = encodeURIComponent('subject,body,start,end,responseStatus,isOrganizer,isCancelled,isAllDay,iCalUId,seriesMasterId,attendees,categories,onlineMeeting,showAs');
   const url = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(startIso)}&endDateTime=${encodeURIComponent(endExclusive)}&$select=${select}&$top=50`;
 
   const events = await paginate(url);
@@ -500,12 +538,7 @@ export async function fetchCalendarEvents(
       onProgress(scanned, scanned, `Processing meetings... ${scanned}`);
     }
 
-    if (!includeCalendarEvent(event)) {
-      // Check tentative if requested
-      if (!includeTentative) continue;
-      const response = event.responseStatus?.response || '';
-      if (response !== 'tentative') continue;
-    }
+    if (!includeCalendarEvent(event, includeTentative)) continue;
 
     const startRaw = event.start?.dateTime || '';
     const meetingLocal = graphDatetimeToLocal(startRaw);

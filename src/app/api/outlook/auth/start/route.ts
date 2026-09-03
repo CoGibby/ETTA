@@ -6,7 +6,11 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const origin = url.origin;
     const redirectUri = `${origin}/api/outlook/auth/callback`;
-    const authUrl = buildAuthUrl(redirectUri);
+    const prompt = url.searchParams.get('prompt');
+    const authUrl = buildAuthUrl(
+      redirectUri,
+      prompt === 'select_account' ? { prompt } : undefined
+    );
     return NextResponse.redirect(authUrl);
   } catch (error) {
     console.error('Error starting Outlook auth:', error);

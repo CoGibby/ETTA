@@ -12,18 +12,24 @@ import { useConnection } from '@/lib/connection-context';
  */
 const DEFAULT_JIRA_URL = 'https://its-pro.ucsd.edu';
 
+function ConnectionChip({ label, connected, checking }: { label: string; connected: boolean; checking: boolean }) {
+  const state = checking ? 'off' : connected ? 'green' : 'red';
+  return (
+    <span className={`conn-chip ${state}`} aria-label={`${label} ${checking ? 'checking' : connected ? 'connected' : 'not connected'}`}>
+      <span className="dot"></span>
+      {label}
+    </span>
+  );
+}
+
 function ConnChip() {
   const { connected, outlookConnected, checking } = useConnection();
-  if (checking) {
-    return <span className="conn-chip off"><span className="dot"></span> Checking...</span>;
-  }
-  if (!connected && !outlookConnected) {
-    return <span className="conn-chip off"><span className="dot"></span> Not connected</span>;
-  }
-  const parts: string[] = [];
-  if (connected) parts.push('Jira');
-  if (outlookConnected) parts.push('Outlook');
-  return <span className="conn-chip green"><span className="dot"></span> Connected to {parts.join(' & ')}</span>;
+  return (
+    <div className="summary-statuses">
+      <ConnectionChip label="Jira" connected={connected} checking={checking} />
+      <ConnectionChip label="Outlook" connected={outlookConnected} checking={checking} />
+    </div>
+  );
 }
 
 /**
@@ -57,6 +63,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   ] as const;
 
   const settingsActive = pathname === '/settings';
+  const isReview = pathname === '/';
+  const isWidePage = isReview || pathname === '/metrics' || settingsActive;
 
   const handleLockedNav = (e: React.MouseEvent) => {
     if (!connected) {
@@ -66,7 +74,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div style={{ background: '#E9EEF3', minHeight: '100vh' }}>
+    <div
+      className={'app-root' + (isReview ? ' review' : pathname === '/metrics' ? ' metrics' : settingsActive ? ' settings' : '') + (isWidePage ? ' expanded' : '')}
+      style={{ background: '#E9EEF3', minHeight: '100vh' }}
+    >
       <div className="apptop">
         <div className="apptop-in">
           <span className="logo">ETTA <small>{'\u00b7'} Time Tracker</small></span>
@@ -97,8 +108,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </div>
 
-      <div style={{ maxWidth: 1240, margin: '20px auto 60px', padding: '0 28px' }}>
-        <div className="etta-frame">
+      <div style={isWidePage ? { margin: 0, padding: '0 0 60px' } : { maxWidth: 1240, margin: '20px auto 60px', padding: '0 28px' }}>
+        <div className={'etta-frame' + (isWidePage ? ' fluid' : '')}>
           <div className="etta-frame-body">
             {onboarding ? (
               <GetStarted onSuccess={refresh} setConnecting={setConnecting} />

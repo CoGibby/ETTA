@@ -1,11 +1,12 @@
 ﻿'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { AllocationCard, AllocRow, fmtHrsMin } from '@/components/review/AllocationCard';
+import { AllocationCard, AllocRow } from '@/components/review/AllocationCard';
 import { CalendarSection } from '@/components/review/CalendarSection';
 import { AddProjectModal } from '@/components/review/AddProjectModal';
 import { useSharedData } from '@/lib/data-context';
 import { useConnection } from '@/lib/connection-context';
+import { CalendarJiraMapping, getMappedJiraIssue, getTempoCoverageForEntries, TempoCoverage, TempoWorklog } from '@/lib/tempo-match';
 import Link from 'next/link';
 
 interface ApiEntry {
@@ -18,6 +19,7 @@ interface ApiEntry {
   jira_issue: string | null;
   jira_name: string | null;
   status: 'pending' | 'pushed' | 'excluded';
+  jira_worklog_id: string | null;
 }
 
 function toIso(d: Date) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -29,10 +31,56 @@ function mondayOf(offset: number): Date {
 const mins = (e: ApiEntry) => e.duration_minutes + (e.context_minutes || 0);
 const toH = (m: number) => Math.round((m / 60) * 10) / 10;
 
+interface TempoHistoryCandidate {
+  key: string;
+  minutes: number;
+  score: number;
+  lastDate: string;
+}
+
+function buildTempoHistoryCandidates(
+  worklogs: (TempoWorklog & { date: string })[],
+  startDate: string,
+  endDate: string
+): TempoHistoryCandidate[] {
+  const byIssue = new Map<string, TempoHistoryCandidate>();
+  const startTime = new Date(startDate + 'T00:00:00').getTime();
+  const endTime = new Date(endDate + 'T00:00:00').getTime();
+
+  for (const worklog of worklogs) {
+    const dayPart = (worklog.date || '').length >= 10 ? worklog.date.substring(0, 10) : worklog.date;
+    if (!dayPart || dayPart < startDate || dayPart > endDate) continue;
+
+    const key = (worklog.issueKey || '').toUpperCase();
+    const minutes = worklog.minutes || 0;
+    if (!key || minutes <= 0) continue;
+
+    const daysAgo = Math.max(0, Math.round((endTime - new Date(dayPart + 'T00:00:00').getTime()) / 86400000));
+    const recencyWeight = 1 / (daysAgo + 1);
+    const current = byIssue.get(key) || { key, minutes: 0, score: 0, lastDate: dayPart };
+    current.minutes += minutes;
+    current.score += minutes * recencyWeight;
+    if (dayPart > current.lastDate) current.lastDate = dayPart;
+    byIssue.set(key, current);
+  }
+
+  return Array.from(byIssue.values())
+    .filter((candidate) => candidate.score > 0 && candidate.lastDate >= startDate && startTime <= endTime)
+    .sort((a, b) => b.score - a.score || b.lastDate.localeCompare(a.lastDate));
+}
+
+function proportionalPercents(scores: number[]): number[] {
+  const total = scores.reduce((sum, score) => sum + score, 0);
+  if (total <= 0) return scores.map(() => 0);
+  const raw = scores.map((score) => Math.round((score / total) * 100 * 2) / 2);
+  const assigned = raw.slice(0, -1).reduce((sum, pct) => sum + pct, 0);
+  raw[raw.length - 1] = Math.round((100 - assigned) * 2) / 2;
+  return raw;
+}
+
 export default function ReviewPage() {
   const { favorites, refreshFavorites } = useSharedData();
   const { outlookConnected } = useConnection();
-  const autoPopulated = useRef(false);
   const [dayOffset, setDayOffset] = useState(0);
   const selectedDate = useMemo(() => {
     const d = new Date();
@@ -41,19 +89,8 @@ export default function ReviewPage() {
   }, [dayOffset]);
   const selectedDateKey = toIso(selectedDate);
 
-  const [rows, setRows] = useState<AllocRow[]>(() => {
-    try {
-      const saved = localStorage.getItem('etta-alloc-rows-today');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          autoPopulated.current = true;
-          return parsed;
-        }
-      }
-    } catch { /* ignore */ }
-    return [];
-  });
+  const [rows, setRows] = useState<AllocRow[]>([]);
+  const rowsRef = useRef<AllocRow[]>([]);
   const [totalHours, setTotalHours] = useState(() => {
     try {
       const saved = localStorage.getItem('etta-alloc-total');
@@ -63,18 +100,30 @@ export default function ReviewPage() {
   });
   const [meetingsHours, setMeetingsHours] = useState(0);
   const [tempoHours, setTempoHours] = useState(0);
-  const [tempoEntries, setTempoEntries] = useState<{ issueKey: string; minutes: number; date: string }[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState('');
   const [loading, setLoading] = useState(true);
   const [weekStats, setWeekStats] = useState({ captured: 0, meetings: 0, pushed: 0, review: 0, autoCoded: 0, total: 0 });
+  const [weekStatuses, setWeekStatuses] = useState({ inJira: 0, ready: 0, needsCode: 0 });
   const [hasData, setHasData] = useState(false);
-  const [weekTempoByDay, setWeekTempoByDay] = useState<Record<string, { issueKey: string; minutes: number }[]>>({});
+  const [dataRefreshToken, setDataRefreshToken] = useState(0);
   const [estimates, setEstimates] = useState<Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>>({});
+  const statsRequestRef = useRef(0);
   const estimatesRef = useRef(estimates);
   useEffect(() => { estimatesRef.current = estimates; }, [estimates]);
+  const favoritesRef = useRef(favorites);
+  useEffect(() => { favoritesRef.current = favorites; }, [favorites]);
+  useEffect(() => { rowsRef.current = rows; }, [rows]);
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('etta-calendar-open') === '1') {
+        setCalendarOpen(true);
+      }
+    } catch { /* Keep the calendar closed if storage is unavailable. */ }
+  }, []);
 
   // Auto-refresh estimates every 5 minutes so warnings stay current
   useEffect(() => {
@@ -93,12 +142,12 @@ export default function ReviewPage() {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
           setRows(parsed);
-          autoPopulated.current = true;
+          rowsRef.current = parsed;
           return;
         }
       }
       setRows([]);
-      autoPopulated.current = false;
+      rowsRef.current = [];
     } catch { /* ignore */ }
   }, [selectedDateKey]);
 
@@ -125,7 +174,7 @@ export default function ReviewPage() {
         if (!cancelled && data.success && data.estimates) {
           const upperEstimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }> = {};
           for (const [k, v] of Object.entries(data.estimates)) {
-            const ev = v as { remaining: number; hasEstimate: boolean; issueType: string };
+            const ev = v as { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string };
             upperEstimates[k.toUpperCase()] = ev;
           }
           setEstimates((prev) => ({ ...prev, ...upperEstimates }));
@@ -143,27 +192,17 @@ export default function ReviewPage() {
   );
 
   const fetchStats = useCallback(async () => {
+    const requestId = ++statsRequestRef.current;
     setLoading(true);
     setTempoHours(0);
-    setTempoEntries([]);
+    setMeetingsHours(0);
     const mon = mondayOf(0);
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     const selectedIso = toIso(selectedDate);
     try {
-      const [weekRes, dayRes] = await Promise.all([
-        fetch(`/api/entries?startDate=${toIso(mon)}&endDate=${toIso(sun)}`),
-        fetch(`/api/entries?date=${selectedIso}`),
-      ]);
-      const weekData = await weekRes.json();
-      const dayData = await dayRes.json();
-      const weekEntries: ApiEntry[] = weekData.entries || [];
-      const dayEntries: ApiEntry[] = dayData.entries || [];
-      const weekHasData = weekEntries.length > 0;
-      setHasData(weekHasData);
-
       // Fetch Tempo worklogs for the FULL WEEK so we can dedup both the
       // summary stats and the per-day meeting/tempo calculations.
-      let weekTempoResult: { success: boolean; totalMinutes?: number; entries?: { issueKey: string; minutes: number; date: string }[]; error?: string } = { success: false };
+      let weekTempoResult: { success: boolean; totalMinutes?: number; entries?: (TempoWorklog & { date: string })[]; error?: string } = { success: false };
       try {
         const tempoRes = await fetch('/api/jira/tempo', {
           method: 'POST',
@@ -177,55 +216,95 @@ export default function ReviewPage() {
       } catch (e) {
         console.log('Tempo not available:', e instanceof Error ? e.message : 'unknown');
       }
+      if (requestId !== statsRequestRef.current) return;
+
+      let calendarMappings: CalendarJiraMapping[] = [];
+      try {
+        const mappingsRes = await fetch('/api/calendar-mappings');
+        const mappingsData = await mappingsRes.json();
+        calendarMappings = mappingsData.mappings || [];
+      } catch {
+        calendarMappings = [];
+      }
+      if (requestId !== statsRequestRef.current) return;
+
+      // Recent Tempo history seeds an empty allocation card with the issues
+      // the user actually worked on most recently.
+      const historyEnd = new Date(selectedDate);
+      historyEnd.setDate(historyEnd.getDate() - 1);
+      const historyStart = new Date(historyEnd);
+      historyStart.setDate(historyStart.getDate() - 13);
+      let recentTempoResult: { success: boolean; entries?: (TempoWorklog & { date: string })[] } = { success: false };
+      try {
+        const recentRes = await fetch('/api/jira/tempo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dateFrom: toIso(historyStart), dateTo: toIso(historyEnd) }),
+        });
+        recentTempoResult = await recentRes.json();
+      } catch { /* Favorites remain the fallback. */ }
+
+      const [weekRes, dayRes] = await Promise.all([
+        fetch(`/api/entries?startDate=${toIso(mon)}&endDate=${toIso(sun)}`),
+        fetch(`/api/entries?date=${selectedIso}`),
+      ]);
+      const weekData = await weekRes.json();
+      const dayData = await dayRes.json();
+      const weekEntries: ApiEntry[] = (weekData.entries || []).filter((entry: ApiEntry) => entry.status !== 'excluded');
+      const dayEntries: ApiEntry[] = (dayData.entries || []).filter((entry: ApiEntry) => entry.status !== 'excluded');
+      const weekHasData = weekEntries.length > 0;
+      if (requestId !== statsRequestRef.current) return;
+      setHasData(weekHasData);
 
       // Build per-day Tempo map for the week
       const weekTempoEntries = weekTempoResult.entries || [];
-      const tempoByDay: Record<string, { issueKey: string; minutes: number }[]> = {};
+      const tempoByDay: Record<string, TempoWorklog[]> = {};
       for (const t of weekTempoEntries) {
         const dayPart = (t.date || '').length >= 10 ? (t.date || '').substring(0, 10) : (t.date || '');
         const d = new Date(dayPart + 'T00:00:00');
         const k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
-        (tempoByDay[k] = tempoByDay[k] || []).push({ issueKey: (t.issueKey || '').toUpperCase(), minutes: t.minutes || 0 });
+        (tempoByDay[k] = tempoByDay[k] || []).push({
+          issueKey: (t.issueKey || '').toUpperCase(),
+          minutes: t.minutes || 0,
+          comment: t.comment || '',
+        });
       }
-      setWeekTempoByDay(tempoByDay);
 
-      // Check if a specific entry is already covered by Tempo for its day.
-      // Uses the same multi-strategy matching as the allocation and calendar views.
-      const isInTempo = (entry: ApiEntry, dayEntries: ApiEntry[]): boolean => {
+      const entriesByDay: Record<string, ApiEntry[]> = {};
+      for (const entry of weekEntries) {
         const d = new Date(entry.date + 'T00:00:00');
         const k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
-        const dayTempo = tempoByDay[k];
-        if (!dayTempo || dayTempo.length === 0) return false;
-        const entryKey = (entry.jira_issue || '').toUpperCase();
-        const entryProject = entryKey.indexOf('-') > 0 ? entryKey.substring(0, entryKey.indexOf('-')) : '';
-        const tempoKeys = new Set(dayTempo.map((t) => t.issueKey));
-        const tempoProjects = new Set(dayTempo.map((t) => {
-          const dash = t.issueKey.indexOf('-');
-          return dash > 0 ? t.issueKey.substring(0, dash) : t.issueKey;
-        }));
-        if (entryKey && tempoKeys.has(entryKey)) return true;
-        if (entryProject && tempoProjects.has(entryProject)) return true;
-        const tempoTotalMin = dayTempo.reduce((s, t) => s + t.minutes, 0);
-        const codedTotalMin = dayEntries
-          .filter((e) => e.jira_issue && e.status !== 'excluded')
-          .reduce((s, e) => s + mins(e), 0);
-        if (tempoTotalMin > 0 && tempoTotalMin >= codedTotalMin) return true;
-        return false;
+        (entriesByDay[k] = entriesByDay[k] || []).push(entry);
+      }
+      const coverageByDay: Record<string, Record<number, TempoCoverage>> = {};
+      for (const [dayKey, dayEntriesForCoverage] of Object.entries(entriesByDay)) {
+        coverageByDay[dayKey] = getTempoCoverageForEntries(
+          dayEntriesForCoverage,
+          tempoByDay[dayKey] || [],
+          calendarMappings
+        );
+      }
+      const coverageOf = (entry: ApiEntry): TempoCoverage => {
+        const d = new Date(entry.date + 'T00:00:00');
+        const k = d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+        return coverageByDay[k]?.[entry.id] || 'none';
       };
-
-      // Group week entries by date string for per-day dedup checks
-      const entriesByDate: Record<string, ApiEntry[]> = {};
-      weekEntries.forEach((e) => {
-        (entriesByDate[e.date] = entriesByDate[e.date] || []).push(e);
-      });
+      const hasAssignableIssue = (entry: ApiEntry) =>
+        Boolean(entry.jira_issue || getMappedJiraIssue(entry, calendarMappings));
 
       setWeekStats({
         captured: toH(weekEntries.reduce((s, e) => s + mins(e), 0)),
         meetings: toH(weekEntries.filter((e) => e.source_type === 'meeting').reduce((s, e) => s + mins(e), 0)),
-        pushed: toH(weekEntries.filter((e) => e.status === 'pushed' || (e.status === 'pending' && isInTempo(e, entriesByDate[e.date] || []))).reduce((s, e) => s + mins(e), 0)),
-        review: toH(weekEntries.filter((e) => e.status === 'pending' && !isInTempo(e, entriesByDate[e.date] || [])).reduce((s, e) => s + mins(e), 0)),
-        autoCoded: weekEntries.filter((e) => e.jira_issue).length,
+        pushed: toH(weekEntries.filter((e) => e.status === 'pushed' || (e.status === 'pending' && coverageOf(e) !== 'none')).reduce((s, e) => s + mins(e), 0)),
+        review: toH(weekEntries.filter((e) => e.status === 'pending' && coverageOf(e) === 'none' && !hasAssignableIssue(e)).reduce((s, e) => s + mins(e), 0)),
+        autoCoded: weekEntries.filter((e) => hasAssignableIssue(e)).length,
         total: weekEntries.length,
+      });
+
+      setWeekStatuses({
+        inJira: weekEntries.filter((e) => e.status === 'pushed' || (e.status === 'pending' && coverageOf(e) !== 'none')).length,
+        ready: weekEntries.filter((e) => e.status === 'pending' && hasAssignableIssue(e) && coverageOf(e) === 'none').length,
+        needsCode: weekEntries.filter((e) => e.status === 'pending' && !hasAssignableIssue(e) && coverageOf(e) === 'none').length,
       });
 
       // Filter Tempo to just the selected day for the per-day allocation logic
@@ -239,72 +318,140 @@ export default function ReviewPage() {
         entries: selectedTempoEntries,
       };
 
-      // Compute meetings hours, excluding meetings already logged in Tempo.
-      // Three matching strategies detect if a calendar meeting was already
-      // manually logged in Tempo (possibly under a different issue key):
-      // 1. Exact issue key match (SVCOPS-652 == SVCOPS-652)
-      // 2. Same project prefix (SVCOPS-652 matches SVCOPS-648 by "SVCOPS")
-      // 3. Tempo total >= total meeting time (Tempo captured the full day)
+      // Count only meetings that do not already have a matching Tempo worklog.
       const dayMeetings = dayEntries.filter((e) => e.source_type === 'meeting');
-      const tempoEntriesList = tempoResult.entries || [];
-      const tempoIssueKeys = new Set(
-        tempoEntriesList.map((t) => (t.issueKey || '').toUpperCase())
-      );
-      const tempoProjects = new Set(
-        tempoEntriesList.map((t) => {
-          const key = (t.issueKey || '').toUpperCase();
-          const dash = key.indexOf('-');
-          return dash > 0 ? key.substring(0, dash) : key;
-        })
-      );
       const tempoTotalMin = tempoResult.totalMinutes || 0;
-      const totalMeetingMin = dayMeetings.reduce((s, m) => s + mins(m), 0);
-      const tempoCapturedAll = tempoTotalMin > 0 && tempoTotalMin >= totalMeetingMin;
 
       let newMeetingMinutes = 0;
-      for (const m of dayMeetings) {
-        const mMinutes = mins(m);
-        const mKey = (m.jira_issue || '').toUpperCase();
-        const mProject = mKey.indexOf('-') > 0 ? mKey.substring(0, mKey.indexOf('-')) : '';
-        const exactMatch = mKey && tempoIssueKeys.has(mKey);
-        const projectMatch = mProject && tempoProjects.has(mProject);
-        if (exactMatch || projectMatch || tempoCapturedAll) {
-          // Meeting already accounted for in Tempo — skip it
-        } else {
-          newMeetingMinutes += mMinutes;
+      const selectedCoverage = coverageByDay[
+        selectedDate.getFullYear() + '-' + selectedDate.getMonth() + '-' + selectedDate.getDate()
+      ] || {};
+      for (const meeting of dayMeetings) {
+        if (selectedCoverage[meeting.id] === 'none') {
+          newMeetingMinutes += mins(meeting);
         }
       }
       setMeetingsHours(toH(newMeetingMinutes));
       setTempoHours(toH(tempoTotalMin));
-      setTempoEntries(tempoEntriesList);
 
-      // Auto-populate allocation bars from today's entries (only once)
-      if (!autoPopulated.current && dayEntries.length > 0) {
-        autoPopulated.current = true;
-        const issueMap = new Map<string, { name: string; mins: number }>();
-        dayEntries.forEach((e) => {
-          if (!e.jira_issue) return;
-          const cur = issueMap.get(e.jira_issue) || { name: e.jira_name || e.jira_issue, mins: 0 };
-          cur.mins += mins(e);
-          issueMap.set(e.jira_issue, cur);
-        });
-        if (issueMap.size > 0) {
-          const totalIssueMins = Array.from(issueMap.values()).reduce((s, v) => s + v.mins, 0);
-          const newRows: AllocRow[] = Array.from(issueMap.entries()).map(([key, v]) => ({
-            key,
-            name: v.name,
-            pct: totalIssueMins > 0 ? Math.round((v.mins / totalIssueMins) * 100 * 2) / 2 : 0,
+      const hasSavedRows = rowsRef.current.some((row) => row.key.trim().length > 0);
+      if (requestId !== statsRequestRef.current) return;
+      const recentTempoCandidates = recentTempoResult.success
+        ? buildTempoHistoryCandidates(
+            recentTempoResult.entries || [],
+            toIso(historyStart),
+            toIso(historyEnd)
+          )
+        : [];
+
+      // Recent Tempo history is the strongest signal of what a user works on.
+      // Seed it whenever the selected day has no saved allocation rows.
+      let seeded = false;
+      if (!hasSavedRows && recentTempoCandidates.length > 0) {
+        const candidates = recentTempoCandidates;
+        const favoriteMap = new Map(
+          favoritesRef.current.map((favorite) => [favorite.jira_key.toUpperCase(), favorite.short_name || favorite.jira_name])
+        );
+        const selected: { key: string; name: string; score: number }[] = [];
+
+        for (const candidate of candidates) {
+          if (selected.some((item) => item.key === candidate.key)) continue;
+          const favoriteName = favoriteMap.get(candidate.key);
+          let name: string;
+
+          if (favoriteName) {
+            name = favoriteName;
+          } else {
+            const validateRes = await fetch('/api/jira/validate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jira_key: candidate.key }),
+            });
+            const validateData = await validateRes.json().catch(() => ({ valid: false }));
+            if (!validateData.valid) continue;
+            name = validateData.jira_name || candidate.key;
+            await fetch('/api/favorites', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ jira_key: candidate.key, jira_name: name }),
+            }).catch(() => {});
+          }
+
+          selected.push({ key: candidate.key, name, score: candidate.score });
+          if (selected.length === 3) break;
+        }
+
+        if (selected.length > 0) {
+          if (requestId !== statsRequestRef.current) return;
+          const percentages = proportionalPercents(selected.map((item) => item.score));
+          const seededRows = selected.map((item, index) => ({
+            key: item.key,
+            name: item.name,
+            pct: percentages[index],
             locked: false,
           }));
-          setRows(newRows);
+          rowsRef.current = seededRows;
+          setRows(seededRows);
+          await refreshFavorites();
+          seeded = true;
         }
       }
+
+      if (!hasSavedRows && !seeded && dayEntries.length > 0) {
+        const issueMap = new Map<string, { name: string; mins: number }>();
+        dayEntries.forEach((entry) => {
+          if (!entry.jira_issue || entry.status === 'excluded') return;
+          const current = issueMap.get(entry.jira_issue) || { name: entry.jira_name || entry.jira_issue, mins: 0 };
+          current.mins += mins(entry);
+          issueMap.set(entry.jira_issue, current);
+        });
+
+        if (issueMap.size > 0) {
+          const totalIssueMins = Array.from(issueMap.values()).reduce((sum, value) => sum + value.mins, 0);
+          const seededRows = Array.from(issueMap.entries()).map(([key, value]) => ({
+            key,
+            name: value.name,
+            pct: totalIssueMins > 0 ? Math.round((value.mins / totalIssueMins) * 100 * 2) / 2 : 0,
+            locked: false,
+          }));
+          rowsRef.current = seededRows;
+          setRows(seededRows);
+          seeded = true;
+        }
+      }
+
+      if (!hasSavedRows && !seeded && favoritesRef.current.length > 0) {
+        const top = favoritesRef.current.slice(0, 3);
+        const even = Math.round((100 / top.length) * 2) / 2;
+        const seededRows = top.map((favorite, index) => ({
+          key: favorite.jira_key,
+          name: favorite.short_name || favorite.jira_name,
+          pct: index === top.length - 1 ? Math.round((100 - even * (top.length - 1)) * 2) / 2 : even,
+          locked: false,
+        }));
+        rowsRef.current = seededRows;
+        setRows(seededRows);
+      }
     } catch {
+      if (requestId !== statsRequestRef.current) return;
       setHasData(false);
     } finally {
-      setLoading(false);
+      if (requestId === statsRequestRef.current) {
+        setLoading(false);
+        setDataRefreshToken((token) => token + 1);
+      }
     }
-  }, [selectedDate]);
+  }, [selectedDate, refreshFavorites]);
+
+  useEffect(() => {
+    const refresh = () => fetchStats();
+    const interval = setInterval(refresh, 300000);
+    window.addEventListener('focus', refresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [fetchStats]);
 
   // Auto-sync calendar on load if Outlook is connected and no recent sync
   const autoSynced = useRef(false);
@@ -325,21 +472,6 @@ export default function ReviewPage() {
   }, [loading]);
 
   useEffect(() => { fetchStats(); }, [fetchStats]);
-
-  // Pre-populate favorites as allocation rows if user has favorites but no rows yet
-  useEffect(() => {
-    if (!autoPopulated.current && !loading && rows.length === 0 && favorites.length > 0 && !hasData) {
-      autoPopulated.current = true;
-      const top = favorites.slice(0, 3);
-      const even = Math.round(100 / top.length * 2) / 2;
-      setRows(top.map((f, i) => ({
-        key: f.jira_key,
-        name: f.short_name || f.jira_name,
-        pct: i === top.length - 1 ? Math.round((100 - even * (top.length - 1)) * 2) / 2 : even,
-        locked: false,
-      })));
-    }
-  }, [favorites, rows.length, loading, hasData]);
 
   const onAddToActive = useCallback((key: string, name: string) => {}, []);
   const onRemoveFromActive = useCallback((key: string, name: string) => {}, []);
@@ -376,7 +508,7 @@ export default function ReviewPage() {
         while (!done) {
           const chunk = await reader?.read();
           if (chunk?.done) { done = true; break; }
-          const text = decoder.decode(chunk?.value || '');
+          const text = decoder.decode(chunk?.value);
           const lines = text.split('\n');
           for (const line of lines) {
             if (line.startsWith('data: ')) {
@@ -431,31 +563,29 @@ export default function ReviewPage() {
     return selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
   }, [dayOffset, selectedDate]);
 
+  const toggleCalendar = () => {
+    const nextOpen = !calendarOpen;
+    setCalendarOpen(nextOpen);
+    try {
+      localStorage.setItem('etta-calendar-open', nextOpen ? '1' : '0');
+    } catch { /* Ignore storage failures. */ }
+  };
+
   if (loading) {
     return (
-      <div style={{ maxWidth: 980, margin: '0 auto' }}>
-        <h2 style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', marginBottom: 4 }}>Review</h2>
-        <p style={{ color: 'var(--slate-400)', fontSize: 13, marginBottom: 14 }}>Loading your week...</p>
+      <div>
         <div style={{ background: 'var(--slate-100)', borderRadius: 12, padding: 40, textAlign: 'center' }}>
-          <div style={{ color: 'var(--slate-400)', fontSize: 14 }}>Gathering entries from your calendar and Jira...</div>
+          <div className="text-muted">Gathering entries from your calendar and Jira...</div>
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ maxWidth: 980, margin: '0 auto' }}>
-      <h2 style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', marginBottom: 4 }}>Review</h2>
-      <p style={{ color: 'var(--slate-500)', fontSize: 13, marginBottom: 14 }}>
-        ETTA auto-gathers from Outlook and Jira. Review your day below, then push to Jira.
-      </p>
-
+    <div>
       {!hasData && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, background: 'var(--blue-50)', border: '1px solid var(--blue-200)', borderRadius: 12, padding: 16, marginBottom: 18 }}>
-          <div style={{ flexShrink: 0, marginTop: 1, color: 'var(--blue-600)' }}>
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
-          </div>
-          <div style={{ fontSize: 13.5, color: 'var(--slate-500)' }}>
+          <div className="text-muted">
             <b style={{ color: 'var(--navy)' }}>No calendar data yet.</b> <Link href="/settings" style={{ color: 'var(--blue-600)', fontWeight: 600, textDecoration: 'underline' }}>Connect Outlook in Settings</Link> to fill your weekly calendar automatically. You can still add projects and allocate time below.
           </div>
         </div>
@@ -475,16 +605,17 @@ export default function ReviewPage() {
           <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => d + 1)} disabled={dayOffset >= 0}>Next</button>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          {syncing && <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>Syncing calendar...</span>}
-          {syncMsg && !syncing && <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>{syncMsg}</span>}
-          {!syncing && !syncMsg && (
+          {syncing && <span className="text-muted">Syncing calendar...</span>}
+          {syncMsg && !syncing && <span className="text-muted">{syncMsg}</span>}
+          {outlookConnected && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button className="btn btn-secondary btn-sm" onClick={syncCalendar} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>Re-sync</button>
+              <span className="text-muted" style={{ fontSize: 12 }}>Calendar auto-refreshes every 5 min</span>
             </div>
           )}
           {!outlookConnected && (
             <Link href="/settings" style={{ fontSize: 13, color: 'var(--danger-600)', fontWeight: 600, textDecoration: 'underline', display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span style={{ fontSize: 16 }}>!</span> Connect Outlook
+              Connect Outlook
             </Link>
           )}
         </div>
@@ -502,42 +633,67 @@ export default function ReviewPage() {
         onRemoveFromActive={onRemoveFromActive}
         onDeleteUnassigned={onDeleteUnassigned}
         onAddProject={() => setAddOpen(true)}
-        dateLabel={dateLabel}
         selectedDateKey={selectedDateKey}
         estimates={estimates}
+        onPushed={fetchStats}
       />
 
-      {/* Summary strip + calendar toggle */}
-      <div style={{ marginTop: 20, marginBottom: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Captured from calendar &amp; email</h3>
-          <span style={{ fontSize: 13, color: 'var(--slate-400)' }}>Auto-gathered by ETTA</span>
-          <button
-            className="btn btn-secondary btn-sm"
-            style={{ marginLeft: 'auto', textTransform: 'none', letterSpacing: 0, fontSize: 13 }}
-            onClick={() => setCalendarOpen(!calendarOpen)}
-          >
-            {calendarOpen ? 'Hide meetings' : 'Review meetings'}
-          </button>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 0, background: 'var(--slate-100)', borderRadius: 8, padding: '8px 14px' }}>
-          {[
-            { label: 'Auto-gathered', val: weekStats.captured + 'h', color: 'var(--blue-600)' },
-            { label: 'Pushed', val: weekStats.pushed + 'h', color: 'var(--success-600)' },
-            { label: 'To review', val: weekStats.review + 'h', color: 'var(--gold-600)' },
-          ].map((s, i) => (
-            <div key={i} style={{ textAlign: 'center', flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {i > 0 && <div style={{ width: 1, height: 24, background: 'var(--slate-200)', marginRight: 14 }}></div>}
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em', color: s.color }}>{s.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: s.color, marginLeft: 4 }}>{s.val}</span>
-              </div>
+      {/* Calendar summary + toggle */}
+      <div className="calendar-summary" style={{ marginTop: 20, marginBottom: 10 }}>
+        {[
+          {
+            label: 'Auto-gathered',
+            value: weekStats.captured + 'h',
+            color: 'var(--blue-600)',
+            status: {
+              className: 'sp-navy',
+              text: 'Ready',
+              title: `${weekStatuses.ready} entr${weekStatuses.ready === 1 ? 'y' : 'ies'} ready to push`,
+            },
+          },
+          {
+            label: 'Pushed',
+            value: weekStats.pushed + 'h',
+            color: 'var(--success-600)',
+            status: {
+              className: 'sp-green',
+              text: 'In Jira',
+              title: `${weekStatuses.inJira} entr${weekStatuses.inJira === 1 ? 'y' : 'ies'} already in Jira`,
+            },
+          },
+          {
+            label: 'To review',
+            value: weekStats.review + 'h',
+            color: 'var(--gold-600)',
+            status: {
+              className: 'sp-gold',
+              text: 'Needs code',
+              title: `${weekStatuses.needsCode} entr${weekStatuses.needsCode === 1 ? 'y' : 'ies'} need a code`,
+            },
+          },
+        ].map((summary) => (
+          <div key={summary.label} className="calendar-summary-cell">
+            <div className="calendar-summary-head">
+              <span style={{ color: summary.color }}>{summary.label}</span>
+              {summary.status && (
+                <span className={'status-pill ' + summary.status.className} title={summary.status.title}>
+                  {summary.status.text}
+                </span>
+              )}
             </div>
-          ))}
-        </div>
+            <span className="calendar-summary-value" style={{ color: summary.color }}>{summary.value}</span>
+          </div>
+        ))}
+        <button
+          className="btn btn-secondary btn-sm"
+          style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13 }}
+          onClick={toggleCalendar}
+        >
+          {calendarOpen ? 'Hide meetings' : 'Review meetings'}
+        </button>
       </div>
 
-      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} />
+      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} refreshToken={dataRefreshToken} onDataChange={fetchStats} />
 
       <AddProjectModal
         open={addOpen}

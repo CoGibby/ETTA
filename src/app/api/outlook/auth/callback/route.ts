@@ -37,7 +37,7 @@ export async function GET(request: Request) {
     console.error('Error in Outlook auth callback:', error);
     const msg = error instanceof Error ? error.message : 'Callback failed';
     return NextResponse.redirect(
-      new URL(`/settings?outlook_error=${encodeURIComponent(msg)}`, url.origin)
+      new URL(`/settings?outlook_error=${encodeURIComponent(msg)}`, new URL(request.url).origin)
     );
   }
 }

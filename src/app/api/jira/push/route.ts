@@ -1,9 +1,26 @@
 ﻿import { NextResponse } from 'next/server';
-import { getJiraCredentials, pushWorklogs, WorklogInput } from '@/lib/jira';
-import { getEntry, bulkUpdateEntries } from '@/lib/db';
+import { getJiraCredentials, pushWorklogs, validateJiraIssue, WorklogInput } from '@/lib/jira';
+import { getEntry, updateEntry, upsertCalendarJiraMapping } from '@/lib/db';
 
 // Server-side lock to prevent concurrent pushes
 let isPushInProgress = false;
+
+async function validateIssueKeys(issueKeys: string[]) {
+  const errors: Record<string, string> = {};
+  const uniqueKeys = Array.from(new Set(issueKeys.map((key) => key.toUpperCase())));
+
+  const credentials = getJiraCredentials();
+  if (!credentials) return errors;
+
+  for (const issueKey of uniqueKeys) {
+    const result = await validateJiraIssue(credentials, issueKey);
+    if (!result.valid) {
+      errors[issueKey] = result.error || 'This issue cannot receive time.';
+    }
+  }
+
+  return errors;
+}
 
 export async function POST(request: Request) {
   // Check if a push is already in progress
@@ -43,6 +60,7 @@ export async function POST(request: Request) {
     // Get entries and validate
     const worklogs: { entryId: number; worklog: WorklogInput }[] = [];
     const skipped: { entryId: number; reason: string }[] = [];
+    const entriesById = new Map<number, NonNullable<ReturnType<typeof getEntry>>>();
 
     for (const entryId of (entryIds || [])) {
       const entry = getEntry(entryId);
@@ -51,6 +69,7 @@ export async function POST(request: Request) {
         skipped.push({ entryId, reason: 'Entry not found' });
         continue;
       }
+      entriesById.set(entryId, entry);
 
       if (!entry.jira_issue) {
         skipped.push({ entryId, reason: 'No Jira issue assigned' });
@@ -75,10 +94,25 @@ export async function POST(request: Request) {
 
     if (worklogs.length === 0 && Array.isArray(directWorklogs) && directWorklogs.length > 0) {
       // Direct worklogs from allocation bars (no DB entries)
-      const validWorklogs = directWorklogs.filter((w: WorklogInput) => w.issueKey && w.timeSpentMinutes > 0);
+      const validWorklogs = directWorklogs
+        .filter((worklog: WorklogInput) => worklog.issueKey && worklog.timeSpentMinutes > 0)
+        .map((worklog: WorklogInput) => ({
+          ...worklog,
+          issueKey: worklog.issueKey.trim().toUpperCase(),
+        }));
       if (validWorklogs.length === 0) {
         return NextResponse.json({ success: false, error: 'No valid worklogs to push' });
       }
+
+      const invalidIssues = await validateIssueKeys(validWorklogs.map((worklog: WorklogInput) => worklog.issueKey));
+      if (Object.keys(invalidIssues).length > 0) {
+        return NextResponse.json({
+          success: false,
+          error: 'One or more Jira issues are not valid. Fix them before logging time.',
+          invalidIssues,
+        }, { status: 400 });
+      }
+
       const result = await pushWorklogs(creds, validWorklogs);
       return NextResponse.json({
         success: result.pushed > 0,
@@ -96,6 +130,15 @@ export async function POST(request: Request) {
       });
     }
 
+    const invalidIssues = await validateIssueKeys(worklogs.map((item) => item.worklog.issueKey));
+    if (Object.keys(invalidIssues).length > 0) {
+      return NextResponse.json({
+        success: false,
+        error: 'One or more Jira issues are not valid. Fix them before logging time.',
+        invalidIssues,
+      }, { status: 400 });
+    }
+
     // Push to Jira
     const result = await pushWorklogs(
       creds,
@@ -104,26 +147,35 @@ export async function POST(request: Request) {
 
     // Update entry statuses based on results
     const pushedAt = new Date().toISOString();
-    const successfulIds: number[] = [];
+    let successfulCount = 0;
     const failedEntries: { entryId: number; error: string }[] = [];
 
-    result.results.forEach((r, index) => {
+    result.results.forEach((resultItem, index) => {
       const entryId = worklogs[index].entryId;
-      if (r.result.success) {
-        successfulIds.push(entryId);
+      if (resultItem.result.success) {
+        updateEntry(entryId, {
+          status: 'pushed',
+          pushed_at: pushedAt,
+          jira_worklog_id: resultItem.result.worklogId || null,
+        });
+        const entry = entriesById.get(entryId);
+        if (entry) {
+          upsertCalendarJiraMapping({
+            title: entry.title,
+            sourceType: entry.source_type,
+            jiraIssue: entry.jira_issue || '',
+            jiraName: entry.jira_name,
+          });
+        }
+        successfulCount++;
       } else {
-        failedEntries.push({ entryId, error: r.result.error || 'Unknown error' });
+        failedEntries.push({ entryId, error: resultItem.result.error || 'Unknown error' });
       }
     });
 
-    // Bulk update successful entries
-    if (successfulIds.length > 0) {
-      bulkUpdateEntries(successfulIds, { status: 'pushed', pushed_at: pushedAt });
-    }
-
     // Build response - partial success is still success, but with warnings
     const hasFailures = failedEntries.length > 0;
-    const hasSuccesses = successfulIds.length > 0;
+    const hasSuccesses = successfulCount > 0;
 
     // Only fail completely if nothing succeeded
     const success = hasSuccesses;

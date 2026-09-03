@@ -24,6 +24,13 @@ interface Route {
   project_name: string | null;
   task_type_name: string | null;
 }
+interface CalendarMapping {
+  id: number;
+  title: string;
+  sourceType: string;
+  jiraIssue: string;
+  jiraName: string | null;
+}
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -31,6 +38,7 @@ export default function SettingsPage() {
   const { projects, taskTypes, refreshAll } = useSharedData();
   const [keywords, setKeywords] = useState<Keyword[]>([]);
   const [routes, setRoutes] = useState<Route[]>([]);
+  const [calendarMappings, setCalendarMappings] = useState<CalendarMapping[]>([]);
   const [automateOpen, setAutomateOpen] = useState(true);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetText, setResetText] = useState('');
@@ -38,6 +46,7 @@ export default function SettingsPage() {
   const [showServerEdit, setShowServerEdit] = useState(false);
   const [serverInput, setServerInput] = useState('');
   const [serverSaved, setServerSaved] = useState(false);
+  const [showEmailEdit, setShowEmailEdit] = useState(false);
   const [outlookStatus, setOutlookStatus] = useState<{ connected: boolean; account: string | null } | null>(null);
   const [outlookLoading, setOutlookLoading] = useState(false);
   const [outlookMsg, setOutlookMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -45,11 +54,17 @@ export default function SettingsPage() {
 
   const fetchRules = useCallback(async () => {
     try {
-      const [kwRes, rtRes] = await Promise.all([fetch('/api/keywords'), fetch('/api/routes')]);
+      const [kwRes, rtRes, mappingRes] = await Promise.all([
+        fetch('/api/keywords'),
+        fetch('/api/routes'),
+        fetch('/api/calendar-mappings'),
+      ]);
       const kwData = await kwRes.json();
       const rtData = await rtRes.json();
+      const mappingData = await mappingRes.json();
       setKeywords(kwData.keywords || []);
       setRoutes(rtData.routes || []);
+      setCalendarMappings(mappingData.mappings || []);
     } catch { /* ignore */ }
   }, []);
 
@@ -75,6 +90,10 @@ export default function SettingsPage() {
   };
   const removeRoute = async (id: number) => {
     await fetch(`/api/routes/${id}`, { method: 'DELETE' });
+    fetchRules();
+  };
+  const removeCalendarMapping = async (id: number) => {
+    await fetch(`/api/calendar-mappings/${id}`, { method: 'DELETE' });
     fetchRules();
   };
 
@@ -143,8 +162,10 @@ export default function SettingsPage() {
 
   useEffect(() => { refreshOutlookStatus(); }, [refreshOutlookStatus]);
 
-  const startOutlookConnect = () => {
-    window.location.href = '/api/outlook/auth/start';
+  const startOutlookConnect = (changeAccount = false) => {
+    window.location.href = changeAccount
+      ? '/api/outlook/auth/start?prompt=select_account'
+      : '/api/outlook/auth/start';
   };
 
 
@@ -155,8 +176,9 @@ export default function SettingsPage() {
     setOutlookLoading(true);
     try {
       await fetch('/api/outlook/auth/logout', { method: 'POST' });
+      localStorage.removeItem('etta-last-sync');
       setOutlookStatus({ connected: false, account: null });
-      setOutlookMsg({ ok: true, text: 'Disconnected.' });
+      setOutlookMsg({ ok: true, text: 'Disconnected. Calendar history was cleared.' });
       await refreshOutlook();
     } catch {
       setOutlookMsg({ ok: false, text: 'Failed to disconnect.' });
@@ -166,8 +188,8 @@ export default function SettingsPage() {
   };
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto' }}>
-      <h2 style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', marginBottom: 20 }}>Settings</h2>
+    <div className="settings-page">
+      <h2 style={{ fontSize: 28, fontWeight: 700, color: 'var(--navy)', marginBottom: 0 }}>Settings</h2>
 
       {/* Automate (collapsible, first, expanded) */}
       <div className={'collapse-entry' + (automateOpen ? ' open' : '')}>
@@ -181,10 +203,10 @@ export default function SettingsPage() {
         <div className="collapse-body">
           {/* Match by keyword */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 8, marginTop: 8 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Match by keyword</h3>
+            <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Match by keyword</h3>
           </div>
           <div style={{ overflowX: 'auto' }}>
-            <table className="table" style={{ minWidth: 560 }}>
+            <table className="table" style={{ minWidth: 760 }}>
               <thead><tr><th style={{ width: '30%' }}>Keyword</th><th>Assigned to</th><th>Matched</th><th></th></tr></thead>
               <tbody>
                 {visibleKeywords.length === 0 && (
@@ -208,7 +230,7 @@ export default function SettingsPage() {
           {/* Unassigned keyword summary */}
           {unassignedKeywords.length > 0 && (
             <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
+              <span style={{ fontSize: 14, color: 'var(--slate-500)' }}>
                 ETTA found <b>{unassignedKeywords.length}</b> unassigned keyword{unassignedKeywords.length === 1 ? '' : 's'} from your calendar and email.
               </span>
               <button className="btn btn-secondary btn-sm" onClick={() => setShowUnassigned(!showUnassigned)}>
@@ -219,14 +241,14 @@ export default function SettingsPage() {
           {showUnassigned && unassignedKeywords.length > 20 && (
             <div style={{ fontSize: 12.5, color: 'var(--slate-400)', marginTop: 6 }}>Showing top 20 by frequency. The rest are available once you assign these.</div>
           )}
-          <div style={{ fontSize: 13, color: 'var(--slate-400)', marginTop: 10 }}>Keywords are auto-extracted from your calendar and email. Assign them to projects above to automate coding.</div>
+          <div style={{ fontSize: 14, color: 'var(--slate-400)', marginTop: 10 }}>Keywords are auto-extracted from your calendar and email. Assign them to projects above to automate coding.</div>
 
           {/* Recurring rules */}
           <div style={{ marginTop: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 8 }}>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Recurring rules</h3>
+            <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Recurring rules</h3>
           </div>
           <div style={{ overflowX: 'auto' }}>
-            <table className="table" style={{ minWidth: 600 }}>
+            <table className="table" style={{ minWidth: 720 }}>
               <thead><tr><th>Rule</th><th>Jira code</th><th>Source</th><th></th></tr></thead>
               <tbody>
                 {routes.length === 0 && (
@@ -248,25 +270,48 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      {/* Calendar title rules */}
+      <div style={{ marginTop: 18 }}>
+        <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)', marginBottom: 8 }}>Calendar title rules</h3>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="table" style={{ minWidth: 760 }}>
+            <thead><tr><th>Calendar title</th><th>Jira code</th><th>Source</th><th></th></tr></thead>
+            <tbody>
+              {calendarMappings.length === 0 && (
+                <tr><td colSpan={4} style={{ color: 'var(--slate-400)' }}>No title rules yet. ETTA creates one when you assign or push a calendar entry.</td></tr>
+              )}
+              {calendarMappings.map((mapping) => (
+                <tr key={mapping.id}>
+                  <td style={{ fontWeight: 600 }}>{mapping.title}</td>
+                  <td><span className="issue-key">{mapping.jiraIssue}</span></td>
+                  <td>{mapping.sourceType === 'all' ? 'Any' : mapping.sourceType}</td>
+                  <td style={{ textAlign: 'right' }}><button className="btn btn-secondary btn-sm" onClick={() => removeCalendarMapping(mapping.id)}>Remove</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       {connected && !outlookStatus?.connected && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, background: 'var(--blue-50)', border: '1px solid var(--blue-200)', borderRadius: 12, padding: 16, marginBottom: 14 }}>
-          <span style={{ flexShrink: 0, color: 'var(--blue-600)', fontSize: 18, fontWeight: 700 }}>!</span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--navy)' }}>Connect your Outlook calendar</div>
-            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>Auto-import your meetings so you don't have to log them manually.</div>
+            <div style={{ fontSize: 14, color: 'var(--slate-500)' }}>Auto-import your meetings so you don&apos;t have to log them manually.</div>
           </div>
-          <button className="btn btn-navy btn-sm" onClick={startOutlookConnect} disabled={outlookLoading}>
+          <button className="btn btn-navy btn-sm" onClick={() => startOutlookConnect()} disabled={outlookLoading}>
             {outlookLoading ? 'Starting...' : 'Connect now'}
           </button>
         </div>
       )}
 
+      <div className="settings-connections">
             {/* Jira */}
-      <div className="card" style={{ padding: '18px 20px', marginBottom: 14 }}>
+      <div className="card" style={{ padding: '22px 24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Jira</h3>
-            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>Server: {host || 'Not configured'}</div>
+            <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Jira</h3>
+            <div style={{ fontSize: 14, color: 'var(--slate-500)' }}>Server: {host || 'Not configured'}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span className="conn-chip green"><span className="dot"></span> Connected</span>
@@ -297,16 +342,16 @@ export default function SettingsPage() {
               </div>
             </div>
           )}
-          {serverSaved && <div style={{ fontSize: 13, color: 'var(--success-600)', marginTop: 6 }}>Server updated.</div>}
+          {serverSaved && <div style={{ fontSize: 14, color: 'var(--success-600)', marginTop: 6 }}>Server updated.</div>}
         </div>
       </div>
 
       {/* Outlook */}
-      <div className="card" style={{ padding: '18px 20px', marginBottom: 14 }}>
+      <div className="card" style={{ padding: '22px 24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
           <div>
-            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Outlook</h3>
-            <div style={{ fontSize: 13, color: 'var(--slate-500)' }}>{outlookStatus?.connected ? outlookStatus.account || 'UCSD calendar & mailbox' : 'UCSD calendar & mailbox'}</div>
+            <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Outlook</h3>
+            <div style={{ fontSize: 14, color: 'var(--slate-500)' }}>{outlookStatus?.connected ? outlookStatus.account || 'UCSD calendar & mailbox' : 'UCSD calendar & mailbox'}</div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {outlookStatus?.connected ? (
@@ -317,7 +362,7 @@ export default function SettingsPage() {
             ) : (
               <>
                 <span className="conn-chip red"><span className="dot"></span> Not connected</span>
-                <button className="btn btn-secondary btn-sm" onClick={startOutlookConnect} disabled={outlookLoading}>
+                <button className="btn btn-secondary btn-sm" onClick={() => startOutlookConnect()} disabled={outlookLoading}>
                   {outlookLoading ? 'Starting...' : 'Connect'}
                 </button>
               </>
@@ -328,32 +373,61 @@ export default function SettingsPage() {
 
         {outlookMsg && (
           <div style={{
-            marginTop: 10, fontSize: 13,
+            marginTop: 10, fontSize: 14,
             color: outlookMsg.ok ? 'var(--success-600)' : 'var(--danger-600)',
           }}>
             {outlookMsg.text}
           </div>
         )}
+        {outlookStatus?.connected && (
+          <div style={{ marginTop: 10 }}>
+            {!showEmailEdit ? (
+              <button className="btn btn-secondary btn-sm" onClick={() => setShowEmailEdit(true)}>
+                Change email
+              </button>
+            ) : (
+              <div style={{ borderTop: '1px solid var(--slate-200)', paddingTop: 12 }}>
+                <label className="field-label">Current account</label>
+                <div style={{ fontSize: 14.5, color: 'var(--navy)', marginBottom: 8 }}>
+                  {outlookStatus.account || 'UCSD calendar & mailbox'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button className="btn btn-navy btn-sm" onClick={() => startOutlookConnect(true)} disabled={outlookLoading}>
+                    Sign in with another account
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setShowEmailEdit(false)}>
+                    Cancel
+                  </button>
+                </div>
+                <div className="field-hint">
+                  Microsoft will ask you to choose an account. Your current connection stays active until the new sign-in finishes.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Reset */}
-      <div className="card" style={{ padding: '18px 20px' }}>
+      </div>
+
+      <div className="card" style={{ padding: '22px 24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>Reset entries</h3>
+          <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Reset entries</h3>
           {!resetOpen && <button className="btn btn-danger btn-sm" onClick={() => setResetOpen(true)}>Reset entries...</button>}
         </div>
         {resetOpen && (
           <div style={{ marginTop: 14 }}>
-            <p style={{ fontSize: 13, color: 'var(--slate-500)', marginBottom: 10 }}>
+            <p style={{ fontSize: 14, color: 'var(--slate-500)', marginBottom: 10 }}>
               This clears all entries stored on this computer. Already-pushed time in Jira is unaffected. Type <b>RESET</b> to confirm.
             </p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input className="input" placeholder="Type RESET" autoComplete="off" style={{ maxWidth: 200 }}
+              <input className="input" placeholder="Type RESET" autoComplete="off" style={{ maxWidth: 240 }}
                 value={resetText} onChange={(e) => setResetText(e.target.value)} />
               <button className="btn btn-danger btn-sm" disabled={resetText.trim().toUpperCase() !== 'RESET'} onClick={doReset}>Confirm reset</button>
               <button className="btn btn-secondary btn-sm" onClick={() => { setResetOpen(false); setResetText(''); }}>Cancel</button>
             </div>
-            {resetDone && <div aria-live="polite" style={{ marginTop: 10, fontSize: 13, color: 'var(--success-600)' }}>Done. Local entries cleared - nothing in Jira was changed.</div>}
+            {resetDone && <div aria-live="polite" style={{ marginTop: 10, fontSize: 14, color: 'var(--success-600)' }}>Done. Local entries cleared - nothing in Jira was changed.</div>}
           </div>
         )}
       </div>

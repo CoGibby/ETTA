@@ -1,10 +1,12 @@
 ﻿import { NextResponse } from 'next/server';
 import { logout } from '@/lib/outlook-graph';
+import { clearTransientData } from '@/lib/db';
 
 export async function POST() {
   try {
     logout();
-    return NextResponse.json({ success: true, message: 'Signed out.' });
+    clearTransientData();
+    return NextResponse.json({ success: true, message: 'Signed out. Imported calendar history was cleared.' });
   } catch (error) {
     return NextResponse.json(
       {

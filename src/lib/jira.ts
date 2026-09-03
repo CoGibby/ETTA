@@ -544,8 +544,9 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
  */
 export async function fetchTempoWorklogs(creds: JiraCredentials, dateFrom: string, dateTo: string): Promise<{
   success: boolean;
+  username?: string;
   totalMinutes?: number;
-  entries?: { issueKey: string; minutes: number; date: string; comment: string }[];
+  entries?: { issueKey: string; minutes: number; date: string; comment: string; worklogId?: string }[];
   error?: string;
 }> {
   try {
@@ -578,16 +579,31 @@ export async function fetchTempoWorklogs(creds: JiraCredentials, dateFrom: strin
       return { success: false, error: 'Tempo returned an unexpected response.' };
     }
 
-    const worklogs = await tempoRes.json();
-    const entries = (worklogs || []).map((w: any) => ({
-      issueKey: w.issue?.key || w.issueKey || '',
-      minutes: w.timeSpentSeconds ? Math.round(w.timeSpentSeconds / 60) : 0,
-      date: w.dateStarted || w.startDate || '',
-      comment: w.comment || '',
+    interface TempoWorklogResponse {
+      id?: number | string;
+      worklogId?: number | string;
+      tempoWorklogId?: number | string;
+      timeSpentSeconds?: number;
+      dateStarted?: string;
+      startDate?: string;
+      comment?: string;
+      issue?: { key?: string };
+      issueKey?: string;
+    }
+
+    const worklogs = (await tempoRes.json()) as TempoWorklogResponse[];
+    const entries = (worklogs || []).map((worklog) => ({
+      issueKey: worklog.issue?.key || worklog.issueKey || '',
+      minutes: worklog.timeSpentSeconds ? Math.round(worklog.timeSpentSeconds / 60) : 0,
+      date: worklog.dateStarted || worklog.startDate || '',
+      comment: worklog.comment || '',
+      worklogId: worklog.tempoWorklogId?.toString()
+        || worklog.worklogId?.toString()
+        || worklog.id?.toString(),
     }));
 
-    const totalMinutes = entries.reduce((s: number, e: any) => s + e.minutes, 0);
-    return { success: true, totalMinutes, entries };
+    const totalMinutes = entries.reduce((sum, entry) => sum + entry.minutes, 0);
+    return { success: true, username, totalMinutes, entries };
   } catch (error) {
     return { success: false, error: describeFetchError(error) };
   }

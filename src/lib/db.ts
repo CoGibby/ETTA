@@ -1,6 +1,7 @@
 ﻿import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import type { CalendarJiraMapping } from './tempo-match';
 
 const DB_PATH = process.env.DB_PATH || './data/keywords.db';
 const dbPath = path.resolve(DB_PATH);
@@ -621,6 +622,13 @@ try {
   // Column already exists, ignore error
 }
 
+// Migration: Store the Jira worklog ID so ETTA can detect Tempo deletions.
+try {
+  db.exec(`ALTER TABLE entries ADD COLUMN jira_worklog_id TEXT`);
+} catch {
+  // Column already exists, ignore
+}
+
 // Migration: Mark existing non-null project/task_type assignments as 'manual' to preserve user's work
 // This is a one-time migration for entries created before source tracking was added
 try {
@@ -652,6 +660,7 @@ export interface Entry {
   task_type_source: TaskTypeSource;
   status: 'pending' | 'pushed' | 'excluded';
   pushed_at: string | null;
+  jira_worklog_id: string | null;
   created_at: string;
 }
 
@@ -761,6 +770,7 @@ export function updateEntry(id: number, updates: Partial<{
   task_type_source: TaskTypeSource;
   status: 'pending' | 'pushed' | 'excluded';
   pushed_at: string | null;
+  jira_worklog_id: string | null;
 }>): { changes: number } {
   const fields: string[] = [];
   const values: (string | number | null)[] = [];
@@ -778,6 +788,7 @@ export function updateEntry(id: number, updates: Partial<{
   if (updates.task_type_source !== undefined) { fields.push('task_type_source = ?'); values.push(updates.task_type_source); }
   if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
   if (updates.pushed_at !== undefined) { fields.push('pushed_at = ?'); values.push(updates.pushed_at); }
+  if (updates.jira_worklog_id !== undefined) { fields.push('jira_worklog_id = ?'); values.push(updates.jira_worklog_id); }
 
   if (fields.length === 0) return { changes: 0 };
 
@@ -801,6 +812,7 @@ export function bulkUpdateEntries(ids: number[], updates: Partial<{
   task_type_source: TaskTypeSource;
   status: 'pending' | 'pushed' | 'excluded';
   pushed_at: string | null;
+  jira_worklog_id: string | null;
 }>): { changes: number } {
   if (ids.length === 0) return { changes: 0 };
 
@@ -816,6 +828,7 @@ export function bulkUpdateEntries(ids: number[], updates: Partial<{
   if (updates.task_type_source !== undefined) { fields.push('task_type_source = ?'); values.push(updates.task_type_source); }
   if (updates.status !== undefined) { fields.push('status = ?'); values.push(updates.status); }
   if (updates.pushed_at !== undefined) { fields.push('pushed_at = ?'); values.push(updates.pushed_at); }
+  if (updates.jira_worklog_id !== undefined) { fields.push('jira_worklog_id = ?'); values.push(updates.jira_worklog_id); }
 
   if (fields.length === 0) return { changes: 0 };
 
@@ -836,17 +849,16 @@ export function clearEntries(): { changes: number } {
 /**
  * Apply routes to existing entries that haven't been manually assigned.
  * This function finds entries where:
- * - jira_source is null or 'route'/'source_route'/'placeholder' (not 'manual' or 'extracted')
+ * - jira_source is null or 'route'/'source_route' (not 'manual' or 'extracted')
  * - project and task_type are both set
  * Then looks up routes and updates jira_issue/jira_source accordingly.
- * ETTA-34: meetings with no Jira code fall back to the placeholder issue instead of being cleared.
  */
 export function applyRoutesToEntries(): { updated: number; cleared: number } {
   // Get all entries that can have routes applied (not manually assigned or extracted)
   const entries = db.prepare(`
     SELECT id, project, task_type, source_type, jira_issue, jira_source
     FROM entries
-    WHERE (jira_source IS NULL OR jira_source IN ('route', 'source_route', 'placeholder'))
+    WHERE (jira_source IS NULL OR jira_source IN ('route', 'source_route'))
       AND status != 'pushed'
   `).all() as {
     id: number;
@@ -859,8 +871,6 @@ export function applyRoutesToEntries(): { updated: number; cleared: number } {
 
   // Get the route maps
   const { threeField, twoFieldTaskType, twoFieldSourceType, sourceOnlyType } = getUnifiedRouteMap();
-  const placeholderKey = getSetting('placeholder_jira_issue');
-
   let updated = 0;
   let cleared = 0;
 
@@ -926,12 +936,7 @@ export function applyRoutesToEntries(): { updated: number; cleared: number } {
       // No route found but entry had route-assigned jira - clear it
       updateStmt.run(null, null, entry.id);
       cleared++;
-    } else if (!entry.jira_issue && entry.source_type !== 'manual' && placeholderKey) {
-      // ETTA-34: source with no Jira code and no matching route -> assign placeholder
-      updateStmt.run(placeholderKey, 'placeholder', entry.id);
-      updated++;
     }
-    // else: jira_source 'placeholder' with no route stays as placeholder (preserved)
   }
 
   return { updated, cleared };
@@ -1089,7 +1094,6 @@ db.exec(`
 // Set default settings (only if not already set)
 db.exec(`
   INSERT OR IGNORE INTO settings (key, value) VALUES ('jira_url', 'https://its-pro.ucsd.edu');
-  INSERT OR IGNORE INTO settings (key, value) VALUES ('placeholder_jira_issue', 'PPMO-537');
   INSERT OR IGNORE INTO settings (key, value) VALUES ('include_tentative_meetings', 'false');
 `);
 
@@ -1192,10 +1196,11 @@ if (placeholderMigrationFlag !== '1') {
         jira_source TEXT CHECK (jira_source IN ('manual', 'route', 'source_route', 'extracted', 'placeholder')),
         jira_name TEXT,
         project_source TEXT CHECK (project_source IN ('manual', 'keyword', 'route')),
-        task_type_source TEXT CHECK (task_type_source IN ('manual', 'keyword', 'route'))
+        task_type_source TEXT CHECK (task_type_source IN ('manual', 'keyword', 'route')),
+        jira_worklog_id TEXT
       );
-      INSERT INTO entries_new (id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source)
-        SELECT id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source FROM entries;
+      INSERT INTO entries_new (id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source, jira_worklog_id)
+        SELECT id, source_id, source_type, title, date, start_time, duration_minutes, jira_issue, project, task_type, status, pushed_at, created_at, context_minutes, jira_source, jira_name, project_source, task_type_source, jira_worklog_id FROM entries;
       DROP TABLE entries;
       ALTER TABLE entries_new RENAME TO entries;
       CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
@@ -1206,6 +1211,19 @@ if (placeholderMigrationFlag !== '1') {
     `);
   }
   setSetting('schema_jira_source_placeholder', '1');
+}
+
+// Legacy placeholder assignments made uncoded entries look ready to push.
+// Clear only pending assignments so already-pushed work history remains intact.
+const removePlaceholderAssignmentsFlag = getSetting('schema_remove_placeholder_assignments');
+if (removePlaceholderAssignmentsFlag !== '1') {
+  db.prepare(`
+    UPDATE entries
+    SET jira_issue = NULL, jira_name = NULL, jira_source = NULL
+    WHERE status = 'pending' AND jira_source = 'placeholder'
+  `).run();
+  deleteSetting('placeholder_jira_issue');
+  setSetting('schema_remove_placeholder_assignments', '1');
 }
 
 export function getAllSettings(): Record<string, string> {
@@ -1219,6 +1237,103 @@ export function getAllSettings(): Record<string, string> {
 
 export function deleteSetting(key: string): void {
   db.prepare('DELETE FROM settings WHERE key = ?').run(key);
+}
+
+// ============================================================================
+// CALENDAR JIRA MAPPINGS - User-specific recurring calendar title mappings
+// ============================================================================
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS calendar_jira_mappings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    normalized_title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'all' CHECK (source_type IN ('meeting', 'email', 'manual', 'all')),
+    jira_issue TEXT NOT NULL,
+    jira_name TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_key, normalized_title, source_type)
+  );
+  CREATE INDEX IF NOT EXISTS idx_calendar_jira_mappings_user ON calendar_jira_mappings(user_key);
+`);
+
+export interface CalendarJiraMappingRow extends CalendarJiraMapping {
+  id: number;
+  userKey: string;
+  title: string;
+  sourceType: CalendarJiraMapping['sourceType'];
+  jiraIssue: string;
+  jiraName: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function normalizeMappingTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+export function getJiraMappingUserKey(): string {
+  const username = getSetting('jira_username') || getSetting('jira_email');
+  const baseUrl = getSetting('jira_url');
+  return username ? `${baseUrl || 'jira'}|${username}` : 'local';
+}
+
+export function getCalendarJiraMappings(userKey = getJiraMappingUserKey()): CalendarJiraMappingRow[] {
+  return db.prepare(`
+    SELECT id, user_key as userKey, title, source_type as sourceType,
+           jira_issue as jiraIssue, jira_name as jiraName,
+           created_at as createdAt, updated_at as updatedAt
+    FROM calendar_jira_mappings
+    WHERE user_key = ?
+    ORDER BY updated_at DESC, title ASC
+  `).all(userKey) as CalendarJiraMappingRow[];
+}
+
+export function upsertCalendarJiraMapping(input: {
+  userKey?: string;
+  title: string;
+  sourceType?: CalendarJiraMapping['sourceType'];
+  jiraIssue: string;
+  jiraName?: string | null;
+}): CalendarJiraMappingRow {
+  const userKey = input.userKey || getJiraMappingUserKey();
+  const title = input.title.trim();
+  const normalizedTitle = normalizeMappingTitle(title);
+  const sourceType = input.sourceType || 'all';
+  const jiraIssue = input.jiraIssue.trim().toUpperCase();
+
+  if (!title || !normalizedTitle || !jiraIssue) {
+    throw new Error('A calendar title and Jira issue are required.');
+  }
+
+  db.prepare(`
+    INSERT INTO calendar_jira_mappings
+      (user_key, title, normalized_title, source_type, jira_issue, jira_name)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_key, normalized_title, source_type) DO UPDATE SET
+      title = excluded.title,
+      jira_issue = excluded.jira_issue,
+      jira_name = excluded.jira_name,
+      updated_at = datetime('now')
+  `).run(userKey, title, normalizedTitle, sourceType, jiraIssue, input.jiraName ?? null);
+
+  return db.prepare(`
+    SELECT id, user_key as userKey, title, source_type as sourceType,
+           jira_issue as jiraIssue, jira_name as jiraName,
+           created_at as createdAt, updated_at as updatedAt
+    FROM calendar_jira_mappings
+    WHERE user_key = ? AND normalized_title = ? AND source_type = ?
+  `).get(userKey, normalizedTitle, sourceType) as CalendarJiraMappingRow;
+}
+
+export function deleteCalendarJiraMapping(id: number, userKey = getJiraMappingUserKey()): { changes: number } {
+  const result = db.prepare('DELETE FROM calendar_jira_mappings WHERE id = ? AND user_key = ?').run(id, userKey);
+  return { changes: result.changes };
 }
 
 // ============================================================================

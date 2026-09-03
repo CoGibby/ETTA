@@ -79,80 +79,82 @@ export default function MetricsPage() {
   };
 
   if (loading) {
-    return <div style={{ maxWidth: 760, margin: '0 auto' }}><p style={{ color: 'var(--slate-400)', fontSize: 13 }}>Loading metrics…</p></div>;
+    return <div className="metrics-page"><p style={{ color: 'var(--slate-400)', fontSize: 14 }}>Loading metrics…</p></div>;
   }
 
   return (
-    <div style={{ maxWidth: 760, margin: '0 auto' }}>
-      <h2 style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', marginBottom: 4 }}>Metrics</h2>
-      <p style={{ color: 'var(--slate-500)', fontSize: 13, marginBottom: 18 }}>Where your time went this week.</p>
+    <div className="metrics-page">
+      <h2 style={{ fontSize: 28, fontWeight: 700, color: 'var(--navy)', marginBottom: 4 }}>Metrics</h2>
+      <p style={{ color: 'var(--slate-500)', fontSize: 14.5, marginBottom: 0 }}>Where your time went this week.</p>
 
       {/* Summary boxes */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 14, marginBottom: 18 }}>
-        <div className="card" style={{ padding: 18, background: 'var(--slate-100)' }}>
-          <div style={{ color: 'var(--navy)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Total captured</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', margin: '4px 0' }}>{totalCaptured}h</div>
-          <div style={{ color: 'var(--slate-400)', fontSize: 13 }}>{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</div>
+      <div className="metrics-summary">
+        <div className="card" style={{ padding: 24, background: 'var(--slate-100)' }}>
+          <div style={{ color: 'var(--navy)', fontSize: 14, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Total captured</div>
+          <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--navy)', margin: '8px 0' }}>{totalCaptured}h</div>
+          <div style={{ color: 'var(--slate-400)', fontSize: 14 }}>{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</div>
         </div>
-        <div className="card" style={{ padding: 18, background: 'var(--success-50)' }}>
-          <div style={{ color: 'var(--navy)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Pushed to Jira</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', margin: '4px 0' }}>{pushedH}h</div>
-          <div style={{ color: 'var(--slate-400)', fontSize: 13 }}>{pushedIssues} {pushedIssues === 1 ? 'issue' : 'issues'}</div>
+        <div className="card" style={{ padding: 24, background: 'var(--success-50)' }}>
+          <div style={{ color: 'var(--navy)', fontSize: 14, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Pushed to Jira</div>
+          <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--navy)', margin: '8px 0' }}>{pushedH}h</div>
+          <div style={{ color: 'var(--slate-400)', fontSize: 14 }}>{pushedIssues} {pushedIssues === 1 ? 'issue' : 'issues'}</div>
         </div>
-        <div className="card" style={{ padding: 18, background: 'var(--gold-50)' }}>
-          <div style={{ color: 'var(--navy)', fontSize: 13, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Needs review</div>
-          <div style={{ fontSize: 24, fontWeight: 700, color: 'var(--navy)', margin: '4px 0' }}>{reviewH}h</div>
-          <div style={{ fontSize: 13, marginTop: 2 }}>
+        <div className="card" style={{ padding: 24, background: 'var(--gold-50)' }}>
+          <div style={{ color: 'var(--navy)', fontSize: 14, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Needs review</div>
+          <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--navy)', margin: '8px 0' }}>{reviewH}h</div>
+          <div style={{ fontSize: 14, marginTop: 2 }}>
             <Link href="/" className="help-link" style={{ fontWeight: 600, color: "var(--navy)", borderBottomColor: "var(--slate-300)" }}>Review now →</Link>
           </div>
         </div>
       </div>
 
       {/* Hours by issue */}
-      {issues.length > 0 && (
-        <div className="card" style={{ padding: 18, marginBottom: 14 }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 12 }}>Hours by issue</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {issues.map((iss) => {
-              const m = statusMeta[iss.status];
-              return (
-                <div key={iss.key}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 13, marginBottom: 4 }}>
-                    <span className="issue-key">{iss.key}</span>
-                    <span style={{ color: 'var(--navy)', fontWeight: 600 }}>
-                      <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: m.color, marginRight: 5, verticalAlign: 'middle' }}></span>
-                      {iss.hours}h · {m.label}
-                    </span>
+      <div className="metrics-columns">
+        {issues.length > 0 && (
+          <div className="card">
+            <h3 style={{ fontWeight: 700, color: 'var(--navy)' }}>Hours by issue</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {issues.map((iss) => {
+                const m = statusMeta[iss.status];
+                return (
+                  <div key={iss.key}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 14, marginBottom: 6 }}>
+                      <span className="issue-key">{iss.key}</span>
+                      <span style={{ color: 'var(--navy)', fontWeight: 600 }}>
+                        <span style={{ display: 'inline-block', width: 9, height: 9, borderRadius: '50%', background: m.color, marginRight: 6, verticalAlign: 'middle' }}></span>
+                        {iss.hours}h · {m.label}
+                      </span>
+                    </div>
+                    <div className="bar" style={{ width: (iss.hours / maxIssueH * 100) + '%', background: m.bg, border: '1px solid ' + m.border }} />
                   </div>
-                  <div className="bar" style={{ width: (iss.hours / maxIssueH * 100) + '%', background: m.bg, border: '1px solid ' + m.border }} />
-                </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--slate-400)', marginTop: 16 }}>
+              Blocked and needs-code hours need attention — <Link href="/" className="help-link" style={{ color: 'var(--navy)', borderBottomColor: 'var(--slate-300)' }}>Review now</Link>
+            </div>
+          </div>
+        )}
+
+        {/* Where your time came from */}
+        <div className="card" style={issues.length === 0 ? { gridColumn: '1 / -1' } : undefined}>
+          <h3 style={{ fontWeight: 700, color: 'var(--navy)' }}>Where your time came from</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {[
+              { pill: 'sp-gray', label: 'Calendar', h: toH(calMins), count: calCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
+              { pill: 'sp-gray', label: 'Email', h: toH(emailMins), count: emailCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
+              { pill: 'sp-gray', label: 'Manual', h: toH(manualMins), count: entries.filter((e) => e.source_type === 'manual').length, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
+            ].map((s, i) => {
+              const maxH = Math.max(0.1, toH(calMins), toH(emailMins), toH(manualMins));
+              return (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <span className={'status-pill ' + s.pill}>{s.label}</span>
+                <span style={{ fontSize: 14, color: 'var(--navy)', minWidth: 120 }}>{s.h}h{s.count > 0 ? ' - ' + s.count + ' ' + (s.count === 1 ? 'entry' : 'entries') : ''}</span>
+                {s.h > 0 && <div className="bar" style={{ background: s.barColor, border: '1px solid ' + s.barBorder, width: Math.max(8, (s.h / maxH) * 100) + '%', maxWidth: '70%' }} />}
+              </div>
               );
             })}
           </div>
-          <div style={{ fontSize: 13, color: 'var(--slate-400)', marginTop: 12 }}>
-            Blocked and needs-code hours need attention — <Link href="/" className="help-link" style={{ color: "var(--navy)", borderBottomColor: "var(--slate-300)" }}>Review now</Link>
-          </div>
-        </div>
-      )}
-
-      {/* Where your time came from */}
-      <div className="card" style={{ padding: 18 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 12 }}>Where your time came from</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {[
-            { pill: 'sp-gray', label: 'Calendar', h: toH(calMins), count: calCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
-            { pill: 'sp-gray', label: 'Email', h: toH(emailMins), count: emailCount, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
-            { pill: 'sp-gray', label: 'Manual', h: toH(manualMins), count: entries.filter((e) => e.source_type === 'manual').length, barColor: 'var(--slate-200)', barBorder: 'var(--slate-300)' },
-          ].map((s, i) => {
-            const maxH = Math.max(0.1, toH(calMins), toH(emailMins), toH(manualMins));
-            return (
-            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span className={'status-pill ' + s.pill}>{s.label}</span>
-              <span style={{ fontSize: 13, color: 'var(--navy)', minWidth: 80 }}>{s.h}h{s.count > 0 ? ' - ' + s.count + ' ' + (s.count === 1 ? 'entry' : 'entries') : ''}</span>
-              {s.h > 0 && <div className="bar" style={{ background: s.barColor, border: '1px solid ' + s.barBorder, width: Math.max(8, (s.h / maxH) * 180) + 'px', height: 8 }} />}
-            </div>
-            );
-          })}
         </div>
       </div>
     </div>

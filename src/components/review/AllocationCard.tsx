@@ -63,15 +63,16 @@ interface Props {
   onRemoveFromActive: (key: string, name: string) => void;
   onDeleteUnassigned: (id: number, key: string) => void;
   onAddProject: () => void;
-  dateLabel: string;
   selectedDateKey?: string;
   estimates?: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>;
+  onPushed?: () => void | Promise<void>;
 }
 
 export function AllocationCard({
   rows, setRows, totalHours, meetingsHours, tempoHours, setTotalHours,
   unassigned, onAddToActive, onRemoveFromActive, onDeleteUnassigned, onAddProject,
-  dateLabel, selectedDateKey, estimates,
+  selectedDateKey, estimates,
+  onPushed,
 }: Props) {
   const workTime = Math.max(0, totalHours - meetingsHours - (tempoHours || 0));
   const anyLocked = rows.some((r) => r.locked);
@@ -120,8 +121,13 @@ export function AllocationCard({
       const data = await res.json();
       if (data.success) {
         setPushMsg({ ok: true, text: `Pushed ${data.pushed} entr${data.pushed === 1 ? 'y' : 'ies'} to Jira.` });
+        await onPushed?.();
       } else {
-        setPushMsg({ ok: false, text: data.error || 'Push failed.' });
+        const invalidIssues = Object.entries(data.invalidIssues || {}) as [string, string][];
+        const issueDetail = invalidIssues.length > 0
+          ? ' ' + invalidIssues.map(([key, reason]) => `${key}: ${reason}`).join(' ')
+          : '';
+        setPushMsg({ ok: false, text: (data.error || 'Push failed.') + issueDetail });
       }
     } catch {
       setPushMsg({ ok: false, text: 'Network error.' });
@@ -246,7 +252,7 @@ export function AllocationCard({
     const row = rows.find((c) => c.key === targetKey);
     if (!row) return;
     setRows((prev) => {
-      let next = prev.filter((c) => c.key !== targetKey).map((c) => ({ ...c }));
+      const next = prev.filter((c) => c.key !== targetKey).map((c) => ({ ...c }));
       const lockedSum = next.filter((c) => c.locked).reduce((s, c) => s + c.pct, 0);
       const unlocked = next.filter((c) => !c.locked);
       if (unlocked.length > 0) {
@@ -286,42 +292,26 @@ export function AllocationCard({
   return (
     <div className="alloc-hero">
       <div className="top-row">
-        <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)' }}>{dateLabel}</div>
         <div className="total-input">
-          <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>Total</span>
+          <span className="text-muted">Total</span>
           <input className="input" type="number" min={0} max={12} value={totalHours}
             onChange={(e) => { const val = parseFloat(e.target.value) || 0; setTotalHours(Math.min(val, 12)); }} />
-          <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>hours</span>
+          <span className="text-muted">hours</span>
 
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, padding: '8px 12px', background: 'var(--slate-100)', borderRadius: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13, color: 'var(--slate-500)', fontWeight: 600 }}>
-          {fmtHrsMin(meetingsHours + (tempoHours || 0))} already accounted for
-        </span>
-        <span style={{ fontSize: 12, color: 'var(--slate-400)' }}>
-          ({(tempoHours || 0) > 0 ? fmtHrsMin(tempoHours || 0) + ' in Jira' : ''}
-          {(tempoHours || 0) > 0 && meetingsHours > 0 ? ' + ' : ''}
-          {meetingsHours > 0 ? fmtHrsMin(meetingsHours) + ' new meetings' : ''}
-          {(tempoHours || 0) === 0 && meetingsHours === 0 ? 'no new meetings' : ''})
-        </span>
-        {(meetingsHours + (tempoHours || 0)) >= totalHours && totalHours > 0 && (
-          <span style={{ fontSize: 12, color: 'var(--success-600)', fontWeight: 600, marginLeft: 'auto' }}>
-            Day is fully logged - no action needed
-          </span>
-        )}
-      </div>
-
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', marginBottom: 14 }}>
-        <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
-          <b style={{ color: 'var(--navy)' }}>{fmtHrsMin(workTime)}</b> to allocate across projects
+        <span className="text-muted">
+          <b style={{ color: 'var(--navy)' }}>{fmtHrsMin(workTime)}</b> to allocate
+          {(tempoHours || 0) > 0 && <>{' \u00b7 '}{fmtHrsMin(tempoHours || 0)} in Tempo</>}
+          {meetingsHours > 0 && <>{' \u00b7 '}{fmtHrsMin(meetingsHours)} meetings to review</>}
         </span>
         {rows.length > 0 && workTime > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {pushMsg && <span style={{ fontSize: 12, color: pushMsg.ok ? 'var(--success-600)' : 'var(--danger-600)', fontWeight: 600 }}>{pushMsg.text}</span>}
-            <button className="btn btn-navy btn-sm" onClick={pushToJira} disabled={pushing}
-              style={{ textTransform: 'none', letterSpacing: 0 }}>
+            <button className="btn btn-navy btn-lg" onClick={pushToJira} disabled={pushing}
+              style={{ textTransform: 'none', letterSpacing: 0, minWidth: 200, flexShrink: 0 }}>
               {pushing ? (pushProgress ? 'Logging ' + pushProgress.current + '/' + pushProgress.total + '...' : 'Logging...') : 'Log time in Jira'}
             </button>
           </div>
@@ -330,7 +320,6 @@ export function AllocationCard({
 
       <div className="alloc-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         Split your time
-        <span style={{ fontSize: 12, color: 'var(--slate-400)', fontWeight: 400 }}>Click a project below to add it</span>
         {anyLocked && (
           <button className="btn btn-secondary btn-sm" onClick={unlockAll}
             style={{ textTransform: 'none', letterSpacing: 0 }}>Unlock all</button>
@@ -369,24 +358,15 @@ export function AllocationCard({
                     <button
                       onClick={(e) => { e.stopPropagation(); setOpenWarnings(prev => { const next = new Set(prev); if (next.has(row.key)) { next.delete(row.key); } else { next.add(row.key); } return next; }); }}
                       title="Click to see details"
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        width: 16, height: 16, borderRadius: 3, flexShrink: 0,
-                        background: 'var(--danger)', color: '#fff', fontSize: 11, fontWeight: 700,
-                        border: 'none', cursor: 'pointer', lineHeight: 1,
-                      }}
+                      className="warn-badge"
                     >!</button>
                   )}
                   {isClosed && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setOpenClosed(prev => { const next = new Set(prev); if (next.has(row.key)) { next.delete(row.key); } else { next.add(row.key); } return next; }); }}
                       title="Click to see details"
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                        width: 16, height: 16, borderRadius: 3, flexShrink: 0,
-                        background: 'var(--gold-600, #92500a)', color: '#fff', fontSize: 11, fontWeight: 700,
-                        border: 'none', cursor: 'pointer', lineHeight: 1, marginLeft: 8,
-                      }}
+                      className="warn-badge"
+                      style={{ marginLeft: 8 }}
                     >!</button>
                   )}
                 </div>
@@ -451,7 +431,7 @@ export function AllocationCard({
         })}
       </div>
 
-      <div className="alloc-section-label" style={{ marginTop: 16 }}>Unassigned</div>
+      <div className="alloc-section-label" style={{ marginTop: 16 }}>Saved for later</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
         {unassigned.map((p) => {
           const short = truncateWords(p.name, 4);
@@ -459,7 +439,7 @@ export function AllocationCard({
           return (
             <div key={p.key} className="proj-chip" onClick={() => addToActive(p.key, p.name)} style={{ cursor: 'pointer' }} title={p.name}>
               <span className="key">{p.key}</span> {short}
-              {isLong && <span style={{ fontSize: 11, color: 'var(--slate-400)', marginLeft: 2, cursor: 'pointer' }}></span>}
+              {isLong && <span className="text-muted" style={{ marginLeft: 2, cursor: 'pointer' }}></span>}
               <button
                 className="btn btn-secondary btn-sm"
                 style={{ padding: '0 4px', fontSize: 13, lineHeight: 1, marginLeft: 4 }}
@@ -477,7 +457,7 @@ export function AllocationCard({
         <div className="modal-overlay" role="dialog" aria-modal="true" onClick={(e) => { if (e.target === e.currentTarget) setShowConfirm(false); }}>
           <div className="modal" style={{ maxWidth: 380 }}>
             <h3>Log time in Jira?</h3>
-            <p style={{ fontSize: 14, color: 'var(--slate-500)' }}>
+            <p className="text-muted">
               This will log <b>{fmtHrsMin(workTime)}</b> across <b>{rows.filter(function(r) { return (r.pct / 100) * workTime > 0; }).length}</b> project{rows.filter(function(r) { return (r.pct / 100) * workTime > 0; }).length === 1 ? '' : 's'} in Jira.
             </p>
             <div className="actions">
