@@ -78,6 +78,8 @@
       { "target": "zip", "arch": ["arm64", "x64"] }
     ],
     "category": "public.app-category.productivity",
+    "hardenedRuntime": true,
+    "notarize": true,
     "artifactName": "ETTA-Time-Tracker-${version}-${arch}.${ext}"
   }
 }
