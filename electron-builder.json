@@ -70,6 +70,8 @@
   "mac": {
     "target": ["dmg"],
     "category": "public.app-category.productivity",
+    "hardenedRuntime": true,
+    "notarize": true,
     "artifactName": "ETTA-Time-Tracker-${version}-${arch}.${ext}"
   }
 }
