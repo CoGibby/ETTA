@@ -8,6 +8,7 @@ import { useSharedData } from '@/lib/data-context';
 import { useConnection } from '@/lib/connection-context';
 import { CalendarJiraMapping, getMappedJiraIssue, getTempoCoverageForEntries, TempoCoverage, TempoWorklog } from '@/lib/tempo-match';
 import Link from 'next/link';
+import { IconChevronDown, IconChevronUp } from "@tabler/icons-react";
 
 interface ApiEntry {
   id: number;
@@ -690,8 +691,17 @@ export default function ReviewPage() {
           className="btn btn-secondary btn-sm"
           style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13 }}
           onClick={toggleCalendar}
+          aria-expanded={calendarOpen}
+          aria-controls="calendar-section"
         >
-          {calendarOpen ? 'Hide meetings' : 'Review meetings'}
+          <span className="inline-flex items-center gap-1.5">
+            {calendarOpen ? 'Hide meetings' : 'Review meetings'}
+            {calendarOpen ? (
+              <IconChevronUp size={14} aria-hidden="true" />
+            ) : (
+              <IconChevronDown size={14} aria-hidden="true" />
+            )}
+          </span>
         </button>
       </div>
 
