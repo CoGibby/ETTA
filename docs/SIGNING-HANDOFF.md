@@ -1,6 +1,6 @@
 # ETTA macOS Signing Handoff
 
-Signed `v1.0.0` (developer/signing cut: tag `macos-signing-v1.0.0` on the UCSD Bitbucket repo).
+Signed `0.9.0-ppmo.12` (pilot signing cut: branch `release/pilot-fresh` on the UCSD Bitbucket repo).
 This is a checklist for the person who holds the UCSD Apple Developer **Developer ID** certificate
 and will sign + notarize the ETTA macOS build on a Mac. Only the macOS signing steps live here,
 because they are machine-dependent (a Mac is required) and the certificate must stay out of CI and
@@ -19,13 +19,12 @@ out of any public or personal GitHub.
 ```bash
 git clone https://sourcecode.ucsd.edu/scm/ai/time-tracker.git
 cd time-tracker
-git fetch --tags
-git checkout macos-signing-v1.0.0
+git checkout release/pilot-fresh
 npm ci
 ```
 
 The signing config is already in the repo (`electron-builder.json` sets hardened runtime and
-notarization on for the `mac` target; `package.json` version is `1.0.0`).
+notarization on for the `mac` target; `package.json` version is `0.9.0-ppmo.12`).
 
 ## 3. Set credentials for this one run (env vars)
 Import/confirm the certificate in Keychain (no file needs to leave the machine). For notarization,
@@ -56,8 +55,8 @@ npm run package:mac
 electron-builder signs the arm64 + x64 apps with the Developer ID identity (picked from Keychain
 or `CSC_LINK`, enables hardened runtime, and notarizes using the API key), then produces:
 
-- `artifacts/ETTA-Time-Tracker-1.0.0-arm64.dmg` and `...-x64.dmg`
-- `artifacts/ETTA-Time-Tracker-1.0.0-arm64.zip` and `...-x64.zip` (the auto-update payload)
+- `artifacts/ETTA-Time-Tracker-0.9.0-ppmo.12-arm64.dmg` and `...-x64.dmg`
+- `artifacts/ETTA-Time-Tracker-0.9.0-ppmo.12-arm64.zip` and `...-x64.zip` (the auto-update payload)
 - `artifacts/latest-mac.yml` (the update feed manifest)
 
 ## 5. Verify before handing back
@@ -69,8 +68,8 @@ Expected: the app is signed by a Developer ID and `spctl` reports **accepted** /
 / **notarized**. Also confirm both archs (`lipo -archs ...` inside each `.app`).
 
 ## 6. What to send back
-- `ETTA-Time-Tracker-1.0.0-{arm64,x64}.dmg`
-- `ETTA-Time-Tracker-1.0.0-{arm64,x64}.zip`
+- `ETTA-Time-Tracker-0.9.0-ppmo.12-{arm64,x64}.dmg`
+- `ETTA-Time-Tracker-0.9.0-ppmo.12-{arm64,x64}.zip`
 - `latest-mac.yml`
 - The `codesign`/`spctl` output snippet for the record.
 
