@@ -7,8 +7,8 @@ import { AddProjectModal } from '@/components/review/AddProjectModal';
 import { useSharedData } from '@/lib/data-context';
 import { useConnection } from '@/lib/connection-context';
 import { CalendarJiraMapping, getMappedJiraIssue, getTempoCoverageForEntries, TempoCoverage, TempoWorklog } from '@/lib/tempo-match';
+import { computeWeekStats } from '@/lib/stats';
 import Link from 'next/link';
-import { IconChevronDown, IconChevronUp } from "@tabler/icons-react";
 
 interface ApiEntry {
   id: number;
@@ -29,7 +29,14 @@ function mondayOf(offset: number): Date {
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   d.setDate(diff + offset * 7); d.setHours(0, 0, 0, 0); return d;
 }
-const mins = (e: ApiEntry) => e.duration_minutes + (e.context_minutes || 0);
+function mondayOfDate(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+const mins = (e: ApiEntry) => e.duration_minutes;
 const toH = (m: number) => Math.round((m / 60) * 10) / 10;
 
 interface TempoHistoryCandidate {
@@ -101,6 +108,7 @@ export default function ReviewPage() {
   });
   const [meetingsHours, setMeetingsHours] = useState(0);
   const [tempoHours, setTempoHours] = useState(0);
+  const [statsRefreshToken, setStatsRefreshToken] = useState(0);
   const [addOpen, setAddOpen] = useState(false);
   const [calendarOpen, setCalendarOpen] = useState(false);
   const [syncing, setSyncing] = useState(false);
@@ -134,6 +142,26 @@ export default function ReviewPage() {
       setEstimates({});
     }, 300000);
     return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    const refreshTempo = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => setStatsRefreshToken((token) => token + 1), 5000);
+    };
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') refreshTempo();
+    };
+    window.addEventListener('focus', refreshTempo);
+    document.addEventListener('visibilitychange', handleVisible);
+    const interval = setInterval(refreshTempo, 60000);
+    return () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      window.removeEventListener('focus', refreshTempo);
+      document.removeEventListener('visibilitychange', handleVisible);
+      clearInterval(interval);
+    };
   }, []);
 
   // Load/save allocation state per day in localStorage
@@ -200,7 +228,7 @@ export default function ReviewPage() {
       setTempoHours(0);
       setMeetingsHours(0);
     }
-    const mon = mondayOf(0);
+    const mon = mondayOfDate(selectedDate);
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     const selectedIso = toIso(selectedDate);
     try {
@@ -238,6 +266,9 @@ export default function ReviewPage() {
       historyEnd.setDate(historyEnd.getDate() - 1);
       const historyStart = new Date(historyEnd);
       historyStart.setDate(historyStart.getDate() - 13);
+      const windowStart = new Date();
+      windowStart.setDate(windowStart.getDate() - 13);
+      if (historyStart < windowStart) historyStart.setTime(windowStart.getTime());
       let recentTempoResult: { success: boolean; entries?: (TempoWorklog & { date: string })[] } = { success: false };
       try {
         const recentRes = await fetch('/api/jira/tempo', {
@@ -296,19 +327,20 @@ export default function ReviewPage() {
       const hasAssignableIssue = (entry: ApiEntry) =>
         Boolean(entry.jira_issue || getMappedJiraIssue(entry, calendarMappings));
 
+      const sharedStats = computeWeekStats(weekEntries, tempoByDay, calendarMappings);
       setWeekStats({
-        captured: toH(weekEntries.reduce((s, e) => s + mins(e), 0)),
-        meetings: toH(weekEntries.filter((e) => e.source_type === 'meeting').reduce((s, e) => s + mins(e), 0)),
-        pushed: toH(weekEntries.filter((e) => e.status === 'pushed' || (e.status === 'pending' && coverageOf(e) !== 'none')).reduce((s, e) => s + mins(e), 0)),
-        review: toH(weekEntries.filter((e) => e.status === 'pending' && coverageOf(e) === 'none' && !hasAssignableIssue(e)).reduce((s, e) => s + mins(e), 0)),
+        captured: toH(sharedStats.capturedMinutes),
+        meetings: toH(sharedStats.meetingMinutes),
+        pushed: toH(sharedStats.pushedMinutes),
+        review: toH(sharedStats.reviewMinutes),
         autoCoded: weekEntries.filter((e) => hasAssignableIssue(e)).length,
-        total: weekEntries.length,
+        total: sharedStats.entryCount,
       });
 
       setWeekStatuses({
-        inJira: weekEntries.filter((e) => e.status === 'pushed' || (e.status === 'pending' && coverageOf(e) !== 'none')).length,
-        ready: weekEntries.filter((e) => e.status === 'pending' && hasAssignableIssue(e) && coverageOf(e) === 'none').length,
-        needsCode: weekEntries.filter((e) => e.status === 'pending' && !hasAssignableIssue(e) && coverageOf(e) === 'none').length,
+        inJira: sharedStats.inJiraCount,
+        ready: sharedStats.readyCount,
+        needsCode: sharedStats.needsCodeCount,
       });
 
       // Filter Tempo to just the selected day for the per-day allocation logic
@@ -335,8 +367,8 @@ export default function ReviewPage() {
           newMeetingMinutes += mins(meeting);
         }
       }
-      setMeetingsHours(toH(newMeetingMinutes));
-      setTempoHours(toH(tempoTotalMin));
+      setMeetingsHours(newMeetingMinutes / 60);
+      setTempoHours(tempoTotalMin / 60);
 
       const hasSavedRows = rowsRef.current.some((row) => row.key.trim().length > 0);
       if (requestId !== statsRequestRef.current) return;
@@ -441,12 +473,11 @@ export default function ReviewPage() {
       setHasData(false);
     } finally {
       if (requestId === statsRequestRef.current) {
-        setLoading(false);
+        if (!hasLoadedOnceRef.current) setLoading(false);
         hasLoadedOnceRef.current = true;
-        setDataRefreshToken((token) => token + 1);
       }
     }
-  }, [selectedDate, refreshFavorites]);
+  }, [selectedDate, refreshFavorites, statsRefreshToken]);
 
   useEffect(() => {
     const refresh = () => fetchStats();
@@ -496,9 +527,11 @@ export default function ReviewPage() {
     setSyncing(true);
     setSyncMsg('');
     try {
-      const mon = mondayOf(-3);
-      const sun = new Date(mondayOf(0));
-      sun.setDate(sun.getDate() + 6);
+      const mon = new Date();
+      mon.setDate(mon.getDate() - 13);
+      mon.setHours(0, 0, 0, 0);
+      const sun = new Date();
+      sun.setHours(23, 59, 59, 999);
       const res = await fetch('/api/sources/extract', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -532,6 +565,7 @@ export default function ReviewPage() {
                       const genData = await genRes.json();
                       if (genData.success) {
                         setSyncMsg(`Synced ${data.total} items, generated ${genData.generated} entries (${genData.skipped} skipped).`);
+                        setDataRefreshToken((token) => token + 1);
                       } else {
                         setSyncMsg(`Synced ${data.total} items. Entry generation failed: ${genData.error || 'unknown error'}.`);
                       }
@@ -562,9 +596,9 @@ export default function ReviewPage() {
   }, [fetchStats]);
 
   const dateLabel = useMemo(() => {
-    if (dayOffset === 0) return 'Today';
-    return selectedDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-  }, [dayOffset, selectedDate]);
+    return selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+  }, [selectedDate]);
+  const selectedDateLabel = dayOffset === 0 ? `Today - ${dateLabel}` : dateLabel;
 
   const toggleCalendar = () => {
     const nextOpen = !calendarOpen;
@@ -586,7 +620,7 @@ export default function ReviewPage() {
 
   return (
     <div>
-      {!hasData && (
+      {!hasData && !outlookConnected && (
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, background: 'var(--blue-50)', border: '1px solid var(--blue-200)', borderRadius: 12, padding: 16, marginBottom: 18 }}>
           <div className="text-muted">
             <b style={{ color: 'var(--navy)' }}>No calendar data yet.</b> <Link href="/settings" style={{ color: 'var(--blue-600)', fontWeight: 600, textDecoration: 'underline' }}>Connect Outlook in Settings</Link> to fill your weekly calendar automatically. You can still add projects and allocate time below.
@@ -594,16 +628,12 @@ export default function ReviewPage() {
         </div>
       )}
 
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => d - 1)}>Prev</button>
-          {dayOffset === 0 ? (
-            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--navy)', padding: '4px 12px' }}>Today</span>
-          ) : (
-            <button className="btn btn-navy btn-sm" onClick={() => setDayOffset(0)} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-              <span>Today</span>
-              <span style={{ fontSize: 11, opacity: 0.7 }}>({dateLabel})</span>
-            </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => Math.max(d - 1, -13))} disabled={dayOffset < -12}>Prev</button>
+          <span aria-live="polite" aria-atomic="true" style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', padding: '4px 10px', minWidth: 170, textAlign: 'center' }}>{selectedDateLabel}</span>
+          {dayOffset !== 0 && (
+            <button className="btn btn-navy btn-sm" onClick={() => setDayOffset(0)}>Jump to today</button>
           )}
           <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => d + 1)} disabled={dayOffset >= 0}>Next</button>
         </div>
@@ -613,7 +643,7 @@ export default function ReviewPage() {
           {outlookConnected && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button className="btn btn-secondary btn-sm" onClick={syncCalendar} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>Re-sync</button>
-              <span className="text-muted" style={{ fontSize: 12 }}>Calendar auto-refreshes every 5 min</span>
+              <span className="text-muted" style={{ fontSize: 13 }}>Calendar auto-refreshes every 5 min</span>
             </div>
           )}
           {!outlookConnected && (
@@ -642,7 +672,7 @@ export default function ReviewPage() {
       />
 
       {/* Calendar summary + toggle */}
-      <div className="calendar-summary" style={{ marginTop: 20, marginBottom: 10 }}>
+      <div className="calendar-summary" style={{ marginTop: 12, marginBottom: 10 }}>
         {[
           {
             label: 'Auto-gathered',
@@ -689,23 +719,27 @@ export default function ReviewPage() {
         ))}
         <button
           className="btn btn-secondary btn-sm"
-          style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13 }}
+          style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13, display: 'inline-flex', alignItems: 'center', gap: 6 }}
           onClick={toggleCalendar}
           aria-expanded={calendarOpen}
           aria-controls="calendar-section"
+          title={calendarOpen ? 'Hide meetings' : 'Review meetings'}
         >
-          <span className="inline-flex items-center gap-1.5">
-            {calendarOpen ? 'Hide meetings' : 'Review meetings'}
-            {calendarOpen ? (
-              <IconChevronUp size={14} aria-hidden="true" />
-            ) : (
-              <IconChevronDown size={14} aria-hidden="true" />
-            )}
-          </span>
+          <span>{calendarOpen ? 'Hide meetings' : 'Review meetings'}</span>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 16 16"
+            fill="none"
+            aria-hidden="true"
+            style={{ transition: 'transform 180ms ease', transform: calendarOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+          >
+            <path d="M3 6l5 5 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </button>
       </div>
 
-      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} refreshToken={dataRefreshToken} onDataChange={fetchStats} />
+      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} refreshToken={dataRefreshToken} onDataChange={fetchStats} initialSelectedDate={selectedDate} />
 
       <AddProjectModal
         open={addOpen}
@@ -716,3 +750,4 @@ export default function ReviewPage() {
     </div>
   );
 }
+

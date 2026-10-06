@@ -1,11 +1,15 @@
 ﻿import { NextResponse } from 'next/server';
 import { buildAuthUrl } from '@/lib/outlook-graph';
 
+function getRedirectUri(origin: string): string {
+  const configuredRedirectUri = process.env.OUTLOOK_REDIRECT_URI?.trim();
+  return configuredRedirectUri || `${origin}/api/outlook/auth/callback`;
+}
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url);
-    const origin = url.origin;
-    const redirectUri = `${origin}/api/outlook/auth/callback`;
+    const redirectUri = getRedirectUri(url.origin);
     const prompt = url.searchParams.get('prompt');
     const authUrl = buildAuthUrl(
       redirectUri,

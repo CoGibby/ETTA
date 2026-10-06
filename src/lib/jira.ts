@@ -1,4 +1,4 @@
-﻿import { getSetting } from './db';
+import { getSetting } from './db';
 
 export interface JiraCredentials {
   baseUrl: string;
@@ -47,7 +47,7 @@ function describeFetchError(error: unknown): string {
   const msg = error.message || '';
 
   if (code === 'ENOTFOUND' || msg.includes('getaddrinfo')) {
-    return 'Could not reach that address. Check the URL for typos — it should look like https://its-pro.ucsd.edu (no trailing slash).';
+    return 'Could not reach that address. Check the URL for typos Ã¢â‚¬â€ it should look like https://its-pro.ucsd.edu (no trailing slash).';
   }
   if (code === 'ECONNREFUSED') {
     return 'The server refused the connection. Verify the URL is correct and that you are on the UCSD network or VPN.';
@@ -97,7 +97,7 @@ export async function testJiraConnection(baseUrl: string, token: string): Promis
     if (response.status === 401 || response.status === 403) {
       return {
         success: false,
-        message: 'Your Personal Access Token was rejected. Double-check the token — it must be a Jira Personal Access Token, not your Jira password.',
+        message: 'Your Personal Access Token was rejected. Double-check the token Ã¢â‚¬â€ it must be a Jira Personal Access Token, not your Jira password.',
       };
     }
 
@@ -441,15 +441,18 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
     };
 
     // Step 1: Collect candidate keys from two sources in parallel:
-    //   a) Issue picker API — partial key matching (e.g. "ett" finds ETTA-34)
-    //   b) JQL summary search — text matching (e.g. "TIM" finds issues mentioning TIM)
+    //   a) Issue picker API Ã¢â‚¬â€ partial key matching (e.g. "ett" finds ETTA-34)
+    //   b) JQL summary search Ã¢â‚¬â€ text matching (e.g. "TIM" finds issues mentioning TIM)
     const pickerUrl = `${cleanBaseUrl}/rest/api/2/issue/picker?query=${encodeURIComponent(query)}&showSubTasks=true&showSubTaskParent=true`;
     const jql = `summary ~ "${safeQuery}*" ORDER BY updated DESC`;
-    const searchUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,updated,issuetype`;
+    const searchUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(jql)}&maxResults=100&fields=summary,updated,issuetype,status`;
+    const textJql = `text ~ "${safeQuery}" ORDER BY updated DESC`;
+    const textUrl = `${cleanBaseUrl}/rest/api/2/search?jql=${encodeURIComponent(textJql)}&maxResults=100&fields=summary,updated,issuetype,status`;
 
-    const [pickerRes, searchRes] = await Promise.allSettled([
+    const [pickerRes, searchRes, textRes] = await Promise.allSettled([
       fetch(pickerUrl, { method: 'GET', headers }),
       fetch(searchUrl, { method: 'GET', headers }),
+      fetch(textUrl, { method: 'GET', headers }),
     ]);
 
     const candidateKeys = new Set<string>();
@@ -479,12 +482,23 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
       }
     }
 
+    // Collect keys from full-text search (matches summary, description, and comments)
+    if (textRes.status === 'fulfilled' && textRes.value.ok) {
+      const ct = textRes.value.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await textRes.value.json();
+        for (const issue of (data.issues || [])) {
+          if (issue.key) candidateKeys.add(issue.key);
+        }
+      }
+    }
+
     if (candidateKeys.size === 0) {
       return { success: true, issues: [] };
     }
 
     // Step 2: Batch-fetch full issue details (including issuetype) for ALL candidate keys.
-    // This is the critical step — every result goes through a JQL query that returns
+    // This is the critical step Ã¢â‚¬â€ every result goes through a JQL query that returns
     // issuetype, so epics and milestones can NEVER appear in the final results.
     // Keys are batched in groups of 40 to avoid URL length limits on Jira Server.
     const allKeys = Array.from(candidateKeys);
@@ -504,7 +518,7 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
           const batchData = await batchRes.json();
           for (const issue of (batchData.issues || [])) {
             const issueType = (issue.fields?.issuetype?.name || '').toLowerCase();
-            // Filter out epics and milestones — time cannot be logged to these
+            // Filter out epics and milestones Ã¢â‚¬â€ time cannot be logged to these
             if (issueType === 'epic' || issueType === 'milestone' || issueType === 'requirement') continue;
             verified.push({
               key: issue.key,
@@ -519,7 +533,7 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
       }
     }
 
-    // Step 3: Sort — key prefix matches first, then by updated date (newest first)
+    // Step 3: Sort Ã¢â‚¬â€ key prefix matches first, then by updated date (newest first)
     const upperQuery = query.toUpperCase();
     const sorted = verified.sort((a, b) => {
       const aKeyMatch = a.key.toUpperCase().startsWith(upperQuery) ? 0 : 1;
@@ -536,6 +550,43 @@ export async function searchJiraIssues(creds: JiraCredentials, query: string): P
       success: false,
       error: describeFetchError(error),
     };
+  }
+}
+export async function updateJiraWorklog(
+  creds: JiraCredentials,
+  issueKey: string,
+  worklogId: string,
+  timeSpentMinutes: number,
+  startedDate: string,
+  comment?: string
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const cleanBaseUrl = creds.baseUrl.replace(/\/$/, '');
+    const apiUrl = `${cleanBaseUrl}/rest/api/2/issue/${issueKey}/worklog/${worklogId}`;
+    const hours = Math.floor(timeSpentMinutes / 60);
+    const minutes = timeSpentMinutes % 60;
+    let timeSpent = '';
+    if (hours > 0) timeSpent += `${hours}h `;
+    if (minutes > 0) timeSpent += `${minutes}m`;
+    if (!timeSpent) timeSpent = '0m';
+    const body: Record<string, unknown> = {
+      timeSpent: timeSpent.trim(),
+      started: `${startedDate}T09:00:00.000+0000`,
+    };
+    if (comment) body.comment = comment;
+    const response = await fetch(apiUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${creds.token}`,
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    if (response.ok) return { success: true };
+    return { success: false, error: `Jira returned HTTP ${response.status}` };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : 'Network error' };
   }
 }
 /**
@@ -640,7 +691,7 @@ export async function validateFavorites(
       foundKeys.add((issue.key || '').toUpperCase());
       const issueType = (issue.fields?.issuetype?.name || '').toLowerCase();
       if (issueType === 'epic' || issueType === 'milestone') {
-        ineligible.push({ key: issue.key, reason: `This issue is a ${issueType} — time cannot be logged to it.` });
+        ineligible.push({ key: issue.key, reason: `This issue is a ${issueType} Ã¢â‚¬â€ time cannot be logged to it.` });
       }
     }
     // Any keys not found in the results were deleted or don't exist

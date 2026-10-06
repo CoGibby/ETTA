@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
@@ -84,6 +84,12 @@ export function AllocationCard({
   const [commentKey, setCommentKey] = useState<string | null>(null);
   const [openWarnings, setOpenWarnings] = useState<Set<string>>(new Set());
   const [openClosed, setOpenClosed] = useState<Set<string>>(new Set());
+  const warningKey = useCallback((key: string) => selectedDateKey ? selectedDateKey + ':' + key : key, [selectedDateKey]);
+
+  useEffect(() => {
+    setOpenWarnings(new Set());
+    setOpenClosed(new Set());
+  }, [selectedDateKey]);
 
   const setComment = useCallback((key: string, text: string) => {
     setRows((prev) => prev.map((r) => r.key === key ? { ...r, comment: text } : r));
@@ -119,15 +125,36 @@ export function AllocationCard({
         body: JSON.stringify({ entryIds: [], worklogs }),
       });
       const data = await res.json();
+
+      // Tempo reconciliation (splits against time already logged in Tempo):
+      const skippedCount = Array.isArray(data.skippedEntries) ? data.skippedEntries.length : (data.skipped || 0);
+      const partialCount = Array.isArray(data.partial) ? data.partial.length : 0;
+
       if (data.success) {
-        setPushMsg({ ok: true, text: `Pushed ${data.pushed} entr${data.pushed === 1 ? 'y' : 'ies'} to Jira.` });
+        let text = `Pushed ${data.pushed} entr${data.pushed === 1 ? 'y' : 'ies'} to Jira.`;
+        if (partialCount > 0 && data.pushed === 0) {
+          text = `Pushed the remaining time not already allocated in Tempo.`;
+        } else if (skippedCount > 0) {
+          text += ` ${skippedCount} ${skippedCount === 1 ? 'entry' : 'entries'} already allocated in Tempo.`;
+        }
+        setPushMsg({ ok: true, text });
         await onPushed?.();
       } else {
         const invalidIssues = Object.entries(data.invalidIssues || {}) as [string, string][];
         const issueDetail = invalidIssues.length > 0
           ? ' ' + invalidIssues.map(([key, reason]) => `${key}: ${reason}`).join(' ')
           : '';
-        setPushMsg({ ok: false, text: (data.error || 'Push failed.') + issueDetail });
+
+        // "All time already allocated" is the expected no-op outcome when the user
+        // has already logged this time manually in Jira/Tempo.
+        const allAllocated = Array.isArray(data.skippedEntries) && data.skippedEntries.length > 0
+          && (data.error || '').toLowerCase().includes('already allocated');
+        if (allAllocated) {
+          setPushMsg({ ok: false, text: 'All time already allocated — nothing to push.' });
+          await onPushed?.();
+        } else {
+          setPushMsg({ ok: false, text: (data.error || 'Push failed.') + issueDetail });
+        }
       }
     } catch {
       setPushMsg({ ok: false, text: 'Network error.' });
@@ -292,21 +319,27 @@ export function AllocationCard({
   return (
     <div className="alloc-hero">
       <div className="top-row">
+        <div className="alloc-summary">
+          {workTime < 0.01 && (tempoHours || 0) > 0 ? (
+            <span className="value">All time already logged in Jira</span>
+          ) : (
+            <>
+              <span className="value">{fmtHrsMin(workTime)}</span>
+              <span className="label">to allocate</span>
+            </>
+          )}
+          {(tempoHours || 0) > 0 && <span className="detail">{fmtHrsMin(tempoHours || 0)} in Tempo</span>}
+          {meetingsHours > 0 && <span className="detail">{fmtHrsMin(meetingsHours)} meetings to review</span>}
+        </div>
         <div className="total-input">
           <span className="text-muted">Total</span>
           <input className="input" type="number" min={0} max={12} value={totalHours}
             onChange={(e) => { const val = parseFloat(e.target.value) || 0; setTotalHours(Math.min(val, 12)); }} />
           <span className="text-muted">hours</span>
-
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', marginBottom: 14 }}>
-        <span className="text-muted">
-          <b style={{ color: 'var(--navy)' }}>{fmtHrsMin(workTime)}</b> to allocate
-          {(tempoHours || 0) > 0 && <>{' \u00b7 '}{fmtHrsMin(tempoHours || 0)} in Tempo</>}
-          {meetingsHours > 0 && <>{' \u00b7 '}{fmtHrsMin(meetingsHours)} meetings to review</>}
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 0 10px', gap: 10 }}>
         {rows.length > 0 && workTime > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {pushMsg && <span style={{ fontSize: 12, color: pushMsg.ok ? 'var(--success-600)' : 'var(--danger-600)', fontWeight: 600 }}>{pushMsg.text}</span>}
@@ -333,7 +366,7 @@ export function AllocationCard({
           const estData = estimates && upperKey in estimates ? estimates[upperKey] : undefined;
           const estHours = estData ? estData.remaining / 3600 : undefined;
           // Only warn if an original estimate was actually set AND we're over it
-          const overEstimate = estData?.hasEstimate === true && estHours !== undefined && hrs > estHours;
+          const overEstimate = estData?.hasEstimate === true && estHours !== undefined && (estHours <= 0 ? hrs > 0 : hrs >= estHours);
           const overBy = estHours !== undefined ? Math.max(0, hrs - estHours) : 0;
           const isClosed = estData ? !estData.isOpen : false;
           const isMeeting = /meeting/i.test(row.name);
@@ -356,7 +389,7 @@ export function AllocationCard({
                   <span className="row-name">{row.name}</span>
                   {overEstimate && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setOpenWarnings(prev => { const next = new Set(prev); if (next.has(row.key)) { next.delete(row.key); } else { next.add(row.key); } return next; }); }}
+                      onClick={(e) => { e.stopPropagation(); const key = warningKey(row.key); setOpenWarnings(prev => { const next = new Set(prev); if (next.has(key)) { next.delete(key); } else { next.add(key); } return next; }); }}
                       title="Click to see details"
                       className="warn-badge"
                     >!</button>
@@ -388,10 +421,10 @@ export function AllocationCard({
                     onClick={() => removeRow(row.key)} title="Remove">x</button>
                 </div>
               </div>
-              {overEstimate && openWarnings.has(row.key) && (
+              {overEstimate && openWarnings.has(warningKey(row.key)) && (
                 <div style={{ padding: '4px 12px 6px', fontSize: 13, color: 'var(--navy)', fontWeight: 600 }}>
                   {'You are exceeding the remaining estimated time. Consider adding a comment to explain.'}
-                  <button onClick={() => { setOpenWarnings(prev => { const next = new Set(prev); next.delete(row.key); return next; }); setCommentKey(row.key); }}
+                    <button onClick={() => { const key = warningKey(row.key); setOpenWarnings(prev => { const next = new Set(prev); next.delete(key); return next; }); setCommentKey(row.key); }}
                     style={{ background: 'none', border: 'none', color: 'var(--navy)', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0, marginLeft: 4, textDecoration: 'underline' }}>
                     Add comment
                   </button>
@@ -450,7 +483,7 @@ export function AllocationCard({
             </div>
           );
         })}
-        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>+ Add project</button>
+        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>Find Jira issue</button>
       </div>
 
       {showConfirm && (

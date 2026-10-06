@@ -6,9 +6,11 @@ import {
   deleteEntry,
   deleteStaleEntriesWithoutManualChanges,
   getSetting,
+  findCalendarExclusionRule,
   Source,
 } from '@/lib/db';
-import { classifySource, roundToQuarterHour, calculateEmailDuration } from '@/lib/classifier';
+import { classifySource, calculateEmailDuration } from '@/lib/classifier';
+import { cleanEmailTitle } from '@/lib/title-clean';
 
 // Helper to parse meeting end time
 function getMeetingEndTime(source: Source): Date | null {
@@ -104,6 +106,12 @@ export async function POST(request: Request) {
         let preservedTaskType: string | null = null;
         let preservedTaskTypeSource: string | null = null;
         let preservedStatus: 'pending' | 'pushed' | 'excluded' = 'pending';
+        const exclusionRule = findCalendarExclusionRule({
+          title: source.subject || '',
+          sourceType: source.type,
+          externalId: source.external_id,
+        });
+        if (exclusionRule) preservedStatus = 'excluded';
 
         if (existingEntry) {
           if (!overwrite) {
@@ -141,20 +149,15 @@ export async function POST(request: Request) {
 
         // Calculate duration and context time
         let durationMinutes: number;
-        let contextMinutes = 0;
         if (source.type === 'meeting') {
-          // Use meeting's actual duration, or default to 60 if not set
+          // Use meeting's exact duration from Outlook â€” no rounding, no context time
           durationMinutes = source.duration_minutes || 60;
-          // Round meeting duration to 15-minute increments
-          durationMinutes = roundToQuarterHour(durationMinutes);
-          // Calculate context time (handles back-to-back consolidation)
-          contextMinutes = calculateContextTime(sources, i, contextBefore, contextAfter);
         } else {
           // Emails get duration based on character count from settings (not rounded)
           durationMinutes = calculateEmailDuration(source.body || '');
         }
         // Total duration includes context time (context time is not rounded separately)
-        const totalDuration = durationMinutes + contextMinutes;
+        const totalDuration = durationMinutes;
 
         // Extract date and time from source date
         // source.date is in format "YYYY-MM-DDTHH:MM:SS" (local time from Outlook)
@@ -167,11 +170,11 @@ export async function POST(request: Request) {
         createEntry({
           source_id: source.id,
           source_type: source.type,
-          title: source.subject || '(No subject)',
+          title: cleanEmailTitle(source.subject) || '(No subject)',
           date: dateStr,
           start_time: timeStr,
           duration_minutes: totalDuration,
-          context_minutes: contextMinutes,
+          context_minutes: 0,
           jira_issue: preservedJiraIssue ?? classification.jiraIssue,
           jira_source: (preservedJiraSource as 'manual' | 'route' | 'source_route' | 'extracted' | null) ?? classification.jiraSource,
           project: preservedProject ?? classification.project,

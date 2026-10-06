@@ -1,8 +1,11 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { CalendarJiraMapping, getMappedJiraIssue, getTempoCoverageForEntries, TempoCoverage, TempoWorklog } from '@/lib/tempo-match';
+import { useConnection } from '@/lib/connection-context';
 import { JiraIssueAutocomplete } from './JiraIssueAutocomplete';
+import { IconCalendarEvent, IconMail, IconUser } from '@tabler/icons-react';
+import { cleanEmailTitle } from '@/lib/title-clean';
 
 interface ApiEntry {
   id: number;
@@ -19,11 +22,26 @@ interface ApiEntry {
   pushed_at: string | null;
   jira_worklog_id: string | null;
   source_status: 'active' | 'stale' | null;
+  conversation_id: string | null;
+  external_id: string | null;
+}
+
+interface DisplayEntry extends ApiEntry {
+  entryIds: number[];
+  emailCount: number;
+  underlying: ApiEntry[];
+}
+
+interface ExclusionRule {
+  id: number;
+  title: string;
+  sourceType: 'meeting' | 'email' | 'manual' | 'all';
+  externalId: string | null;
 }
 
 type CellStatus = 'cloud' | 'likely' | 'local' | 'need' | 'block' | 'empty' | 'partial' | 'excluded';
 
-function statusOf(e: ApiEntry): CellStatus {
+function statusOf(e: DisplayEntry): CellStatus {
   if (e.status === 'pushed') return 'cloud';
   if (e.status === 'excluded') return 'excluded';
   if (e.jira_issue) return 'local';
@@ -51,12 +69,35 @@ function fmtDate(d: Date) {
 }
 function dateKey(d: Date) { return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate(); }
 function toIso(d: Date) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
-function hoursOf(list: ApiEntry[]) {
-  return Math.round(
-    list
-      .filter((entry) => entry.status !== 'excluded')
-      .reduce((total, entry) => total + (entry.duration_minutes + (entry.context_minutes || 0)) / 60, 0) * 100
-  ) / 100;
+function formatDuration(minutes: number): string {
+  const total = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(total / 60);
+  const remainder = total % 60;
+  if (hours === 0) return remainder + 'm';
+  if (remainder === 0) return hours + 'h';
+  return hours + 'h ' + remainder + 'm';
+}
+
+function totalMinutes(list: DisplayEntry[]): number {
+  return list
+    .filter((entry) => entry.status !== 'excluded')
+    .reduce((total, entry) => total + entry.duration_minutes, 0);
+}
+
+function normalizeTitle(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function mondayOfDate(date: Date): Date {
+  const d = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() - day + (day === 0 ? -6 : 1));
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function weekOffsetForDate(date: Date): number {
+  return Math.round((mondayOfDate(date).getTime() - mondayOf(0).getTime()) / (7 * 24 * 60 * 60 * 1000));
 }
 
 function mondayOf(offset: number): Date {
@@ -68,7 +109,64 @@ function mondayOf(offset: number): Date {
   return d;
 }
 
-interface DayData { date: ReturnType<typeof fmtDate>; entries: ApiEntry[]; }
+interface DayData { date: ReturnType<typeof fmtDate>; entries: DisplayEntry[]; }
+
+function toDisplayEntry(entry: ApiEntry): DisplayEntry {
+  return { ...entry, entryIds: [entry.id], emailCount: 1, underlying: [entry] };
+}
+
+function groupEntriesForDay(entries: ApiEntry[]): DisplayEntry[] {
+  const emailGroups = new Map<string, ApiEntry[]>();
+  const standalone: DisplayEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.source_type !== 'email') {
+      standalone.push(toDisplayEntry(entry));
+      continue;
+    }
+    const key = entry.conversation_id || 'subject:' + normalizeTitle(entry.title);
+    const group = emailGroups.get(key) || [];
+    group.push(entry);
+    emailGroups.set(key, group);
+  }
+
+  for (const group of emailGroups.values()) {
+    if (group.length === 1) {
+      standalone.push(toDisplayEntry(group[0]));
+      continue;
+    }
+
+    const primary = [...group].sort((a, b) => (a.start_time || '').localeCompare(b.start_time || ''))[0];
+    const issueValues = Array.from(new Set(group.map((entry) => entry.jira_issue).filter(Boolean))) as string[];
+    const worklogValues = Array.from(new Set(group.map((entry) => entry.jira_worklog_id).filter(Boolean))) as string[];
+    const allExcluded = group.every((entry) => entry.status === 'excluded');
+    const allPushed = group.every((entry) => entry.status === 'pushed');
+
+    standalone.push({
+      ...primary,
+      duration_minutes: group.reduce((total, entry) => total + entry.duration_minutes, 0),
+      context_minutes: 0,
+      status: allExcluded ? 'excluded' : allPushed ? 'pushed' : 'pending',
+      jira_issue: issueValues.length === 1 ? issueValues[0] : null,
+      jira_worklog_id: worklogValues.length === 1 ? worklogValues[0] : null,
+      entryIds: group.map((entry) => entry.id),
+      emailCount: group.length,
+      underlying: group,
+    });
+  }
+
+  return standalone;
+}
+
+function displayTitle(entry: DisplayEntry): string {
+  return entry.emailCount > 1 ? `${cleanEmailTitle(entry.title)} (${entry.emailCount} emails)` : cleanEmailTitle(entry.title);
+}
+
+function entryTypeLabel(entry: DisplayEntry): string {
+  if (entry.status === 'excluded') return 'Non-work ' + entry.source_type;
+  if (entry.emailCount > 1) return 'Email thread';
+  return entry.source_type;
+}
 
 function pillFor(st: CellStatus): [string, string] {
   if (st === 'cloud') return ['sp-green', 'In Jira'];
@@ -85,20 +183,26 @@ export function CalendarSection({
   setOpen,
   refreshToken,
   onDataChange,
+  initialSelectedDate,
 }: {
   open: boolean;
   setOpen: (v: boolean) => void;
   refreshToken: number;
   onDataChange?: () => void;
+  initialSelectedDate?: Date;
 }) {
   const [weekOffset, setWeekOffset] = useState(0);
   const [selIdx, setSelIdx] = useState(0);
   const [days, setDays] = useState<DayData[]>([]);
+  const [exclusionRules, setExclusionRules] = useState<ExclusionRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [pushing, setPushing] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [coverageByDay, setCoverageByDay] = useState<Record<string, Record<number, TempoCoverage>>>({});
+  const { outlookConnected } = useConnection();
   const [mappings, setMappings] = useState<CalendarJiraMapping[]>([]);
+  const [expandedEntryIds, setExpandedEntryIds] = useState<Set<number>>(new Set());
+  const [invalidIssueIds, setInvalidIssueIds] = useState<Set<number>>(new Set());
   const today = new Date();
   const gridRef = useRef<HTMLDivElement>(null);
   const fetchRequestRef = useRef(0);
@@ -147,6 +251,14 @@ export function CalendarSection({
         weekMappings = [];
       }
 
+      try {
+        const exclusionsRes = await fetch('/api/calendar-exclusions');
+        const exclusionsData = await exclusionsRes.json();
+        setExclusionRules(exclusionsData.rules || []);
+      } catch {
+        setExclusionRules([]);
+      }
+
       if (requestId !== fetchRequestRef.current) return;
 
       const res = await fetch(`/api/entries?startDate=${toIso(mon)}&endDate=${toIso(sun)}`);
@@ -161,7 +273,7 @@ export function CalendarSection({
       const built: DayData[] = [];
       for (let i = 0; i < 7; i++) {
         const d = new Date(mon); d.setDate(mon.getDate() + i);
-        built.push({ date: fmtDate(d), entries: map[dateKey(d)] || [] });
+        built.push({ date: fmtDate(d), entries: groupEntriesForDay(map[dateKey(d)] || []) });
       }
 
       const nextCoverage: Record<string, Record<number, TempoCoverage>> = {};
@@ -178,6 +290,18 @@ export function CalendarSection({
     }
   }, []);
 
+  const initializedOpenRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      initializedOpenRef.current = false;
+      return;
+    }
+    if (initializedOpenRef.current || !initialSelectedDate) return;
+    initializedOpenRef.current = true;
+    setWeekOffset(weekOffsetForDate(initialSelectedDate));
+    setSelIdx((initialSelectedDate.getDay() + 6) % 7);
+  }, [open, initialSelectedDate]);
+
   useEffect(() => {
     if (!open) return;
 
@@ -189,12 +313,12 @@ export function CalendarSection({
     const w0 = days[0].date, w6 = days[6].date;
     const w0f = w0.short + ' ' + w0.num;
     const w6f = w0.month === w6.month ? String(w6.num) : w6.short + ' ' + w6.num;
-    return w0f + ' – ' + w6f + ', ' + w0.year;
+    return w0f + ' to ' + w6f + ', ' + w0.year;
   })();
 
   const hasEntries = days.some((d) => d.entries.length > 0);
 
-  const shiftWeek = (d: number) => { setWeekOffset((w) => w + d); setSelIdx(0); };
+  const shiftWeek = (d: number) => { setWeekOffset((w) => Math.min(0, Math.max(-2, w + d))); setSelIdx(0); };
 
   const patchEntry = async (id: number, updates: Record<string, unknown>) => {
     await fetch('/api/entries', {
@@ -204,19 +328,69 @@ export function CalendarSection({
     });
   };
 
-  const updateEntry = async (id: number, updates: Record<string, unknown>) => {
-    await patchEntry(id, updates);
-    fetchWeek(weekOffset);
+  const patchEntries = async (ids: number[], updates: Record<string, unknown>) => {
+    await fetch('/api/entries', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids, updates }),
+    });
   };
 
-  const mappingFor = (entry: ApiEntry): CalendarJiraMapping | null => {
+  const mappingFor = (entry: DisplayEntry): CalendarJiraMapping | null => {
     return getMappedJiraIssue(entry, mappings);
   };
 
-  const materializeMappedIssue = async (entry: ApiEntry) => {
+  const exclusionRuleFor = (entry: DisplayEntry): ExclusionRule | null => {
+    const normalizedTitle = normalizeTitle(entry.title);
+    return exclusionRules.find((rule) =>
+      normalizeTitle(rule.title) === normalizedTitle &&
+      (rule.sourceType === 'all' || rule.sourceType === entry.source_type)
+    ) || null;
+  };
+
+  const updateLocalEntry = (id: number, updates: Partial<DisplayEntry>) => {
+    setDays((current) => current.map((day) => ({
+      ...day,
+      entries: day.entries.map((entry) => entry.id === id ? { ...entry, ...updates } : entry),
+    })));
+  };
+
+  const updateLocalEntryDeep = (id: number, updates: Partial<DisplayEntry>) => {
+    setDays((current) => current.map((day) => ({
+      ...day,
+      entries: day.entries.map((entry) => {
+        if (entry.id !== id) return entry;
+        return {
+          ...entry,
+          ...updates,
+          underlying: entry.underlying.map((item) => ({ ...item, ...updates })),
+        };
+      }),
+    })));
+  };
+
+  const clearJiraIssue = (id: number) => {
+    setInvalidIssueIds((current) => new Set(current).add(id));
+    const entry = days.flatMap((day) => day.entries).find((item) => item.id === id);
+    const ids = entry?.entryIds || [id];
+    const updates = { jira_issue: null, jira_name: null, jira_source: null, jira_worklog_id: null };
+    updateLocalEntryDeep(id, updates);
+    patchEntries(ids, updates).catch(() => {});
+  };
+
+  const toggleEntryDetails = (id: number) => {
+    setExpandedEntryIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const materializeMappedIssue = async (entry: DisplayEntry) => {
     const mapping = mappingFor(entry);
-    if (!mapping || entry.jira_issue) return;
-    await patchEntry(entry.id, {
+    if (!mapping) return;
+    if (entry.underlying.every((item) => item.jira_issue)) return;
+    await patchEntries(entry.entryIds, {
       jira_issue: mapping.jiraIssue,
       jira_name: mapping.jiraName || null,
       jira_source: 'source_route',
@@ -224,7 +398,15 @@ export function CalendarSection({
     });
   };
 
-  const saveJiraForEntry = async (entry: ApiEntry, issue: string) => {
+  const saveJiraForEntry = async (entry: DisplayEntry, issue: string) => {
+    setInvalidIssueIds((current) => {
+      if (!current.has(entry.id)) return current;
+      const next = new Set(current);
+      next.delete(entry.id);
+      return next;
+    });
+    const updates = { jira_issue: issue, jira_name: null, jira_source: 'manual', jira_worklog_id: null };
+    updateLocalEntryDeep(entry.id, updates);
     try {
       const res = await fetch('/api/calendar-mappings', {
         method: 'POST',
@@ -246,22 +428,18 @@ export function CalendarSection({
     } catch {
       // The entry can still be saved even if the reusable mapping cannot.
     }
-    await updateEntry(entry.id, {
-      jira_issue: issue,
-      jira_name: null,
-      jira_source: 'manual',
-      jira_worklog_id: null,
-    });
+    await patchEntries(entry.entryIds, updates);
+    fetchWeek(weekOffset);
   };
 
-  const forgetMapping = async (entry: ApiEntry) => {
+  const forgetMapping = async (entry: DisplayEntry) => {
     const mapping = mappingFor(entry);
     if (!mapping?.id) return;
     try {
       await fetch(`/api/calendar-mappings/${mapping.id}`, { method: 'DELETE' });
       setMappings((current) => current.filter((item) => item.id !== mapping.id));
       if (entry.jira_source === 'source_route') {
-        await patchEntry(entry.id, {
+        await patchEntries(entry.entryIds, {
           jira_issue: null,
           jira_name: null,
           jira_source: null,
@@ -273,17 +451,64 @@ export function CalendarSection({
     }
   };
 
-  const pushEntry = async (entry: ApiEntry) => {
+  const markNotWork = async (entry: DisplayEntry) => {
+    try {
+      const res = await fetch('/api/calendar-exclusions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: entry.title,
+          sourceType: entry.source_type,
+          externalId: entry.external_id,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.rule) {
+        setExclusionRules((current) => [data.rule, ...current.filter((rule) => rule.id !== data.rule.id)]);
+        setBanner(`Marked as not work. Similar future ${entry.source_type}s will be excluded automatically.`);
+      } else {
+        setBanner(data.error || 'Could not save the not-work rule.');
+      }
+    } catch {
+      setBanner('Network error while saving the not-work rule.');
+    } finally {
+      fetchWeek(weekOffset);
+      onDataChange?.();
+      setTimeout(() => setBanner(null), 5000);
+    }
+  };
+
+  const includeEntry = async (entry: DisplayEntry) => {
+    await patchEntries(entry.entryIds, { status: 'pending' });
+    fetchWeek(weekOffset);
+  };
+
+  const stopExcluding = async (entry: DisplayEntry) => {
+    const rule = exclusionRuleFor(entry);
+    if (!rule) return;
+    try {
+      await fetch(`/api/calendar-exclusions/${rule.id}`, { method: 'DELETE' });
+      setExclusionRules((current) => current.filter((item) => item.id !== rule.id));
+      setBanner('Future entries with this title will no longer be excluded automatically.');
+    } catch {
+      setBanner('Could not remove the not-work rule.');
+    } finally {
+      fetchWeek(weekOffset);
+      setTimeout(() => setBanner(null), 5000);
+    }
+  };
+
+  const pushEntry = async (entry: DisplayEntry) => {
+    if (invalidIssueIds.has(entry.id) || !entry.jira_issue) return;
     await materializeMappedIssue(entry);
     setPushing(true);
     try {
       const res = await fetch('/api/jira/push', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entryIds: [entry.id] }),
+        body: JSON.stringify({ entryGroups: [entry.entryIds] }),
       });
       const data = await res.json();
-      if (data.success) { setBanner('Pushed to Jira.'); }
-      else { setBanner(data.error || 'Push failed.'); }
+      setBanner(data.success ? 'Pushed to Jira.' : (data.error || 'Push failed.'));
     } catch { setBanner('Network error.'); }
     finally { setPushing(false); fetchWeek(weekOffset); onDataChange?.(); setTimeout(() => setBanner(null), 4000); }
   };
@@ -291,20 +516,20 @@ export function CalendarSection({
   const pushReady = async () => {
     const day = days[selIdx];
     if (!day) return;
-    const readyEntries = day.entries.filter((entry) => displayStatusOf(entry) === 'local');
+    const readyEntries = day.entries.filter((entry) => displayStatusOf(entry) === 'local' && !invalidIssueIds.has(entry.id) && entry.jira_issue);
     if (readyEntries.length === 0) return;
     for (const entry of readyEntries) {
       await materializeMappedIssue(entry);
     }
-    const ready = readyEntries.map((entry) => entry.id);
+    const groups = readyEntries.map((entry) => entry.entryIds);
     setPushing(true);
     try {
       const res = await fetch('/api/jira/push', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ entryIds: ready }),
+        body: JSON.stringify({ entryGroups: groups }),
       });
       const data = await res.json();
-      setBanner(data.success ? `Pushed ${ready.length} entr${ready.length === 1 ? 'y' : 'ies'} to Jira.` : (data.error || 'Push failed.'));
+      setBanner(data.success ? `Pushed ${readyEntries.length} entr${readyEntries.length === 1 ? 'y' : 'ies'} to Jira.` : (data.error || 'Push failed.'));
     } catch { setBanner('Network error.'); }
     finally { setPushing(false); fetchWeek(weekOffset); onDataChange?.(); setTimeout(() => setBanner(null), 4000); }
   };
@@ -317,26 +542,68 @@ export function CalendarSection({
     return coverageByDay[k]?.[entry.id] || 'none';
   };
 
-  const displayStatusOf = (entry: ApiEntry): CellStatus => {
-    if (statusOf(entry) === 'excluded') return 'excluded';
-    const coverage = tempoCoverageFor(entry);
-    if (coverage === 'full') return 'cloud';
-    if (coverage === 'likely') return 'likely';
-    if (coverage === 'partial') return 'partial';
-    if (statusOf(entry) === 'need' && mappingFor(entry)) return 'local';
-    return statusOf(entry);
+  const displayStatusOf = (entry: DisplayEntry): CellStatus => {
+    if (entry.status === 'excluded') return 'excluded';
+
+    const activeEntries = entry.underlying.filter((item) => item.status !== 'excluded');
+    if (activeEntries.length === 0) return 'excluded';
+
+    const coverages = activeEntries.map((item) => tempoCoverageFor(item));
+    if (coverages.every((coverage) => coverage === 'full')) return 'cloud';
+    if (coverages.some((coverage) => coverage === 'full' || coverage === 'likely')) return 'partial';
+
+    const issueValues = new Set(activeEntries.map((item) => item.jira_issue).filter(Boolean));
+    const mappedIssue = mappingFor(entry);
+    if (issueValues.size === 0 && !mappedIssue) return 'need';
+    if (activeEntries.some((item) => !item.jira_issue) && !mappedIssue) return 'need';
+    if (issueValues.size > 1) return 'need';
+    return 'local';
+  };
+
+  const setEntryDuration = async (entry: DisplayEntry, minutes: number) => {
+    const ids = entry.entryIds;
+    if (ids.length === 1) {
+      await patchEntry(ids[0], { duration_minutes: minutes });
+    } else {
+      const base = Math.floor(minutes / ids.length);
+      let remainder = minutes - base * ids.length;
+      await Promise.all(ids.map((id) => {
+        const duration = base + (remainder > 0 ? 1 : 0);
+        if (remainder > 0) remainder--;
+        return patchEntry(id, { duration_minutes: duration });
+      }));
+    }
+
+    updateLocalEntry(entry.id, { duration_minutes: minutes });
+
+    if (entry.status === 'pushed' && entry.jira_issue && entry.jira_worklog_id) {
+      try {
+        await fetch('/api/jira/update-worklog', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            issueKey: entry.jira_issue,
+            worklogId: entry.jira_worklog_id,
+            timeSpentMinutes: minutes,
+            startedDate: entry.date,
+          }),
+        });
+      } catch {
+        // Keep the local edit visible; Jira reconciliation will surface a mismatch later.
+      }
+    }
   };
 
   const readyCount = selDay
-    ? selDay.entries.filter((entry) => displayStatusOf(entry) === 'local').length
+    ? selDay.entries.filter((entry) => displayStatusOf(entry) === 'local' && !invalidIssueIds.has(entry.id) && entry.jira_issue).length
     : 0;
 
   return (
     <>
-      <div className={'detail-toggle-body' + (open ? ' open' : '')}>
+      <div id="calendar-section" className={'detail-toggle-body' + (open ? ' open' : '')}>
         <div className="calhead">
           <div className="weeknav">
-            <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(-1)}>Prev</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(-1)} disabled={weekOffset < -1}>Prev</button>
             <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(1)}>Next</button>
             <button className="btn btn-navy btn-sm" onClick={() => { setWeekOffset(0); setSelIdx(0); }}>This week</button>
             <span className="text-muted" aria-live="polite" aria-atomic="true" style={{ minWidth: 150, textAlign: 'center' }}>{weekLabel}</span>
@@ -344,8 +611,8 @@ export function CalendarSection({
         </div>
 
         {loading ? (
-          <p className="text-muted" style={{ padding: 12 }}>Loading…</p>
-        ) : !hasEntries ? (
+          <p className="text-muted" style={{ padding: 12 }}>Loading...</p>
+        ) : !hasEntries && !outlookConnected ? (
           <div className="cal-empty">
             <span><b>No entries yet</b><br />ETTA is gathering your calendar and email. Connect Outlook in Settings to populate your week.</span>
           </div>
@@ -354,14 +621,15 @@ export function CalendarSection({
             <div className="calwrap">
               <div className="calGrid" ref={gridRef} role="grid" aria-label="Weekly calendar">
                 {days.map((day, idx) => {
-                  const total = hoursOf(day.entries);
-                  const isToday = day.date.num === today.getDate() && day.date.month === MONTHS[today.getMonth()];
+                  const total = totalMinutes(day.entries);
+                  const isToday = day.date.num === today.getDate() && day.date.month === MONTHS[today.getMonth()] && day.date.year === today.getFullYear();
                   let st: CellStatus = 'empty';
                   if (day.entries.length > 0) {
                     if (day.entries.some((entry) => displayStatusOf(entry) === 'need')) st = 'need';
                     else if (day.entries.some((entry) => displayStatusOf(entry) === 'partial')) st = 'partial';
                     else if (day.entries.some((entry) => displayStatusOf(entry) === 'local')) st = 'local';
                     else if (day.entries.some((entry) => displayStatusOf(entry) === 'likely')) st = 'likely';
+                    else if (day.entries.every((entry) => displayStatusOf(entry) === 'excluded')) st = 'excluded';
                     else st = 'cloud';
                   }
                   return (
@@ -375,13 +643,46 @@ export function CalendarSection({
                         if (e.key === 'ArrowLeft') { e.preventDefault(); setSelIdx(Math.max(idx - 1, 0)); }
                       }}>
                       <div className="dhead"><span className="ddow">{day.date.sdow}</span><span className="dnum">{day.date.num}</span></div>
-                      <div className="dsum">{total > 0 ? total + 'h' : 'No entries'}</div>
-                      {day.entries.slice(0, 4).map((en, i) => (
-                        <div key={i} className={'ent st-' + displayStatusOf(en)}>
-                          {en.title}
-                          <div className="row2">{en.source_type} · {Math.round((en.duration_minutes + (en.context_minutes || 0)) / 60 * 10) / 10}h</div>
-                        </div>
-                      ))}
+                      <div className="dsum">{total > 0 ? formatDuration(total) : 'No entries'}</div>
+                      <div style={{ maxHeight: 280, overflowY: 'auto', paddingRight: 4 }}>
+                        {day.entries.map((entry) => {
+                          const expanded = expandedEntryIds.has(entry.id);
+                          return (
+                            <div key={entry.id} className={'ent st-' + displayStatusOf(entry)}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <button
+                                  type="button"
+                                  title={entry.title}
+                                  onClick={(event) => { event.stopPropagation(); setSelIdx(idx); }}
+                                  style={{ all: 'unset', cursor: 'pointer', display: 'block', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                >
+                                  {displayTitle(entry)}
+                                </button>
+                                <button
+                                  type="button"
+                                  aria-expanded={expanded}
+                                  aria-label={expanded ? 'Collapse entry details' : 'Expand entry details'}
+                                  onClick={(event) => { event.stopPropagation(); toggleEntryDetails(entry.id); }}
+                                  style={{ all: 'unset', cursor: 'pointer', color: 'var(--navy)', fontWeight: 700, padding: '0 4px', display: 'inline-flex', alignItems: 'center' }}
+                                >
+                                  {entry.source_type === 'meeting' ? (
+                                    <IconCalendarEvent size={14} style={{ display: 'block', transition: 'transform 180ms ease', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                                  ) : entry.source_type === 'email' ? (
+                                    <IconMail size={14} style={{ display: 'block', transition: 'transform 180ms ease', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                                  ) : (
+                                    <IconUser size={14} style={{ display: 'block', transition: 'transform 180ms ease', transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)' }} />
+                                  )}
+                                </button>
+                              </div>
+                              {expanded && (
+                                <div className="row2" style={{ whiteSpace: 'normal' }}>
+                                  {entryTypeLabel(entry)}{entry.emailCount > 1 ? ` - ${entry.emailCount} emails` : ''} - {formatDuration(entry.duration_minutes)}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   );
                 })}
@@ -403,44 +704,57 @@ export function CalendarSection({
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
                       <table className="table" style={{ minWidth: 760 }}>
-                        <thead><tr><th>Entry</th><th>Status</th><th style={{ width: 230 }}>Jira activity</th><th>Hours</th><th>Action</th></tr></thead>
+                        <thead><tr><th>Entry</th><th style={{ width: 230 }}>Jira activity</th><th>Hours</th><th>Action</th></tr></thead>
                         <tbody>
                           {selDay.entries.map((e) => {
                             const st = displayStatusOf(e);
-                            const [pillCls, pillLabel] = pillFor(st);
-                            const hrs = Math.round((e.duration_minutes + (e.context_minutes || 0)) / 60 * 10) / 10;
                             const mapping = mappingFor(e);
+                            const rule = exclusionRuleFor(e);
+                            const canPushRemaining = st === 'partial' && e.underlying.some((item) => item.status !== 'pushed' && item.status !== 'excluded' && (item.jira_issue || mapping?.jiraIssue));
                             return (
                               <tr key={e.id}>
                                 <td>
                                   <div style={{ fontWeight: 600 }}>{e.title}</div>
-                                  <div className="text-muted">{e.source_type}</div>
+                                  <div className="text-muted">{entryTypeLabel(e)}{e.emailCount > 1 ? ` - ${e.emailCount} emails` : ''}</div>
                                 </td>
-                                <td><span className={'status-pill ' + pillCls}>{pillLabel}</span></td>
                                 <td>
                                   {st === 'cloud' || st === 'partial' ? (
                                     <span className="issue-key">{e.jira_issue || mapping?.jiraIssue || '--'}</span>
                                   ) : (
                                     <>
-                                      <JiraInput entry={e} suggestedIssue={mapping?.jiraIssue} helperText={mapping ? 'Reused from this calendar title.' : 'Review the Jira issue before pushing.'} onSave={(issue) => saveJiraForEntry(e, issue)} />
+                                      <JiraInput entry={e} suggestedIssue={mapping?.jiraIssue} helperText={mapping ? 'Auto-filled from your previous entry for this meeting.' : 'Review the Jira issue before pushing.'} onSave={(issue) => saveJiraForEntry(e, issue)} onClear={clearJiraIssue} />
                                       {mapping?.id && (
                                         <button className="btn btn-secondary btn-sm" style={{ marginTop: 6 }} onClick={() => forgetMapping(e)}>Forget mapping</button>
                                       )}
                                     </>
                                   )}
                                 </td>
-                                <td>{hrs}h</td>
                                 <td>
-                                  {st === 'cloud' && <span className="status-pill sp-green">In Jira</span>}
-                                  {st === 'likely' && <span className="status-pill sp-green">Likely in Jira</span>}
-                                  {st === 'partial' && <span className="status-pill sp-grey">Partly in Jira</span>}
-                                  {st === 'local' && <button className="btn btn-primary btn-sm" disabled={pushing} onClick={() => pushEntry(e)}>Push</button>}
-                                  {st === 'need' && <span className="status-pill sp-gold">Needs code</span>}
-                                  {st === 'excluded' && (
-                                    <button className="btn btn-secondary btn-sm" onClick={() => updateEntry(e.id, { status: 'pending' })}>Include</button>
+                                  <DurationInput entry={e} disabled={st === 'cloud' || st === 'likely' || st === 'partial' || st === 'excluded'} onSave={(_, minutes) => setEntryDuration(e, minutes)} />
+                                </td>
+                                <td style={{ minWidth: 150 }}>
+                                  {st === 'cloud' && <span className="text-muted">Already pushed</span>}
+                                  {st === 'likely' && <span className="text-muted">Likely in Jira</span>}
+                                  {st === 'partial' && !canPushRemaining && <span className="text-muted">Partly logged</span>}
+                                  {st === 'partial' && canPushRemaining && (
+                                    <button className="btn btn-primary btn-sm" disabled={pushing} onClick={() => pushEntry(e)}>Push rest</button>
                                   )}
-                                  {st !== 'excluded' && st !== 'cloud' && st !== 'partial' && (
-                                    <button className="btn btn-secondary btn-sm" onClick={() => updateEntry(e.id, { status: 'excluded' })}>Not work</button>
+                                  {st === 'local' && <button className="btn btn-primary btn-sm" disabled={pushing || invalidIssueIds.has(e.id)} onClick={() => pushEntry(e)}>Push</button>}
+                                  {st === 'need' && (
+                                    <div>
+                                      <button className="btn btn-primary btn-sm" disabled title="Add a valid Jira issue first">Push</button>
+                                      <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>Needs Jira issue</div>
+                                    </div>
+                                  )}
+                                  {st === 'excluded' && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                      <span className="text-muted">Not work</span>
+                                      <button className="btn btn-secondary btn-sm" onClick={() => includeEntry(e)}>Include</button>
+                                      {rule && <button className="btn btn-secondary btn-sm" onClick={() => stopExcluding(e)}>Stop excluding</button>}
+                                    </div>
+                                  )}
+                                  {st !== 'excluded' && st !== 'cloud' && st !== 'partial' && st !== 'likely' && (
+                                    <button className="btn btn-secondary btn-sm" onClick={() => markNotWork(e)}>Not work</button>
                                   )}
                                 </td>
                               </tr>
@@ -467,20 +781,72 @@ export function CalendarSection({
   );
 }
 
+function DurationInput({ entry, onSave, disabled = false }: { entry: DisplayEntry; onSave: (id: number, minutes: number) => void; disabled?: boolean }) {
+  const toHours = (minutes: number) => String(Math.round((minutes / 60) * 4) / 4);
+  const [value, setValue] = useState(toHours(entry.duration_minutes));
+  const roundToQuarter = (hours: number) => Math.max(0.25, Math.round(hours * 4) / 4);
+
+  const commit = () => {
+    if (disabled) return;
+    const hours = parseFloat(value);
+    if (!isNaN(hours)) {
+      const rounded = roundToQuarter(hours);
+      const minutes = Math.round(rounded * 60);
+      if (minutes !== entry.duration_minutes) {
+        onSave(entry.id, minutes);
+        setValue(String(rounded));
+        return;
+      }
+    }
+    setValue(toHours(entry.duration_minutes));
+  };
+
+  const step = (direction: 1 | -1) => {
+    if (disabled) return;
+    const hours = parseFloat(value);
+    const base = isNaN(hours) ? entry.duration_minutes / 60 : hours;
+    setValue(String(Math.max(0.25, roundToQuarter(base) + direction * 0.25)));
+  };
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <input
+        type="number"
+        className="input"
+        style={{ width: 80, padding: '5px 8px' }}
+        value={value}
+        min={0.25}
+        step={0.25}
+        disabled={disabled}
+        onChange={(event) => setValue(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.currentTarget.blur();
+          if (event.key === 'ArrowUp') { event.preventDefault(); step(1); }
+          if (event.key === 'ArrowDown') { event.preventDefault(); step(-1); }
+        }}
+      />
+      <span className="text-muted" style={{ fontSize: 12 }}>hr</span>
+    </span>
+  );
+}
 function JiraInput({
   entry,
   onSave,
   suggestedIssue,
   helperText,
+  onClear,
 }: {
   entry: ApiEntry;
   onSave: (issue: string) => void;
   suggestedIssue?: string;
   helperText?: string;
+  onClear: (id: number) => void;
 }) {
   const [val, setVal] = useState(entry.jira_issue || suggestedIssue || '');
   const [status, setStatus] = useState<'idle' | 'validating' | 'saved' | 'error'>('idle');
   const [error, setError] = useState('');
+  const lastValidIssue = useRef((entry.jira_issue || suggestedIssue || '').trim().toUpperCase());
 
   const validateAndSave = async (issue: string) => {
     if (!issue || issue === entry.jira_issue) return;
@@ -504,6 +870,7 @@ function JiraInput({
         return;
       }
       setStatus('saved');
+      lastValidIssue.current = issue.trim().toUpperCase();
       onSave(issue.trim().toUpperCase());
       setTimeout(() => setStatus('idle'), 2000);
     } catch {
@@ -520,6 +887,9 @@ function JiraInput({
           setVal(nextValue);
           setStatus('idle');
           setError('');
+          if (lastValidIssue.current && nextValue.trim().toUpperCase() !== lastValidIssue.current) {
+            onClear(entry.id);
+          }
         }}
         onSelect={(issue) => {
           setVal(issue.key);

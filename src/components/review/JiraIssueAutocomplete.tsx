@@ -181,14 +181,9 @@ export function JiraIssueAutocomplete({
       Math.max(12, viewportWidth - width - 12)
     );
     const spaceBelow = viewportHeight - inputRect.bottom - 18;
-    const spaceAbove = inputRect.top - 18;
     const preferredHeight = 340;
-    const placeBelow = spaceBelow >= Math.min(preferredHeight, 220) || spaceBelow >= spaceAbove;
-    const availableHeight = placeBelow ? spaceBelow : spaceAbove;
-    const maxHeight = Math.max(180, Math.min(preferredHeight, availableHeight));
-    const top = placeBelow
-      ? inputRect.bottom + 6
-      : Math.max(12, inputRect.top - maxHeight - 6);
+    const maxHeight = Math.max(160, Math.min(preferredHeight, spaceBelow));
+    const top = inputRect.bottom + 6;
 
     setPortalStyle({
       position: 'fixed',
@@ -271,7 +266,7 @@ export function JiraIssueAutocomplete({
 
           {!searching && results.length === 0 && (
             <div style={{ padding: '10px 12px', fontSize: 13, color: 'var(--slate-400)' }}>
-              No eligible matches. Press Enter to check a full issue key.
+              No suggestions yet. Press Enter to validate the issue key.
             </div>
           )}
 

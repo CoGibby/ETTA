@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -51,6 +51,10 @@ export default function SettingsPage() {
   const [outlookLoading, setOutlookLoading] = useState(false);
   const [outlookMsg, setOutlookMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [showUnassigned, setShowUnassigned] = useState(false);
+  const [ruleMsg, setRuleMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [newMapping, setNewMapping] = useState({ title: '', sourceType: 'all', jiraIssue: '' });
+  const [newRoute, setNewRoute] = useState({ projectId: '', taskTypeId: '', sourceType: '', jiraKey: '' });
+  const [keywordAssign, setKeywordAssign] = useState({ keywordId: '', projectId: '', taskTypeId: '' });
 
   const fetchRules = useCallback(async () => {
     try {
@@ -95,6 +99,77 @@ export default function SettingsPage() {
   const removeCalendarMapping = async (id: number) => {
     await fetch(`/api/calendar-mappings/${id}`, { method: 'DELETE' });
     fetchRules();
+  };
+
+  const addCalendarMapping = async () => {
+    setRuleMsg(null);
+    try {
+      const res = await fetch('/api/calendar-mappings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newMapping),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setRuleMsg({ ok: true, text: 'Calendar title rule saved.' });
+        setNewMapping({ title: '', sourceType: 'all', jiraIssue: '' });
+        fetchRules();
+      } else {
+        setRuleMsg({ ok: false, text: data.error || 'Could not save the rule.' });
+      }
+    } catch {
+      setRuleMsg({ ok: false, text: 'Network error while saving the rule.' });
+    }
+  };
+
+  const addRoute = async () => {
+    setRuleMsg(null);
+    try {
+      const res = await fetch('/api/routes', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          project_id: newRoute.projectId ? Number(newRoute.projectId) : null,
+          task_type_id: newRoute.taskTypeId ? Number(newRoute.taskTypeId) : null,
+          source_type: newRoute.sourceType || null,
+          jira_key: newRoute.jiraKey.trim().toUpperCase(),
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setRuleMsg({ ok: true, text: 'Recurring rule saved.' });
+        setNewRoute({ projectId: '', taskTypeId: '', sourceType: '', jiraKey: '' });
+        fetchRules();
+      } else {
+        setRuleMsg({ ok: false, text: data.error || 'Could not save the rule.' });
+      }
+    } catch {
+      setRuleMsg({ ok: false, text: 'Network error while saving the rule.' });
+    }
+  };
+
+  const assignKeyword = async () => {
+    setRuleMsg(null);
+    if (!keywordAssign.keywordId) {
+      setRuleMsg({ ok: false, text: 'Choose a keyword first.' });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/keywords/${keywordAssign.keywordId}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectId: keywordAssign.projectId ? Number(keywordAssign.projectId) : null,
+          taskTypeId: keywordAssign.taskTypeId ? Number(keywordAssign.taskTypeId) : null,
+        }),
+      });
+      if (res.ok) {
+        setRuleMsg({ ok: true, text: 'Keyword assignment saved.' });
+        setKeywordAssign({ keywordId: '', projectId: '', taskTypeId: '' });
+        fetchRules();
+      } else {
+        setRuleMsg({ ok: false, text: 'Could not assign the keyword.' });
+      }
+    } catch {
+      setRuleMsg({ ok: false, text: 'Network error while assigning the keyword.' });
+    }
   };
 
   const disconnectJira = async () => {
@@ -162,10 +237,23 @@ export default function SettingsPage() {
 
   useEffect(() => { refreshOutlookStatus(); }, [refreshOutlookStatus]);
 
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible') refreshOutlookStatus();
+    };
+    window.addEventListener('focus', refreshOutlookStatus);
+    document.addEventListener('visibilitychange', handleVisible);
+    return () => {
+      window.removeEventListener('focus', refreshOutlookStatus);
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
+  }, [refreshOutlookStatus]);
+
   const startOutlookConnect = (changeAccount = false) => {
-    window.location.href = changeAccount
+    const url = changeAccount
       ? '/api/outlook/auth/start?prompt=select_account'
       : '/api/outlook/auth/start';
+    window.open(url, '_blank');
   };
 
 
@@ -193,14 +281,109 @@ export default function SettingsPage() {
 
       {/* Automate (collapsible, first, expanded) */}
       <div className={'collapse-entry' + (automateOpen ? ' open' : '')}>
-        <div className="collapse-head" onClick={() => setAutomateOpen(!automateOpen)}>
+        <button type="button" className="collapse-head" onClick={() => setAutomateOpen(!automateOpen)} aria-expanded={automateOpen}>
           <div>
             <div className="collapse-title">Automate</div>
             <div className="collapse-summary">Set rules so ETTA codes your recurring work automatically - less manual entry each day.</div>
           </div>
           <span className="collapse-arrow">{'>'}</span>
-        </div>
+        </button>
         <div className="collapse-body">
+          {ruleMsg && (
+            <div style={{ marginBottom: 12, fontSize: 13.5, fontWeight: 600, color: ruleMsg.ok ? 'var(--success-600)' : 'var(--danger-600)' }}>
+              {ruleMsg.text}
+            </div>
+          )}
+
+          {/* Create a calendar title rule */}
+          <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 10 }}>Create a calendar title rule</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Calendar title</label>
+                <input className="input" value={newMapping.title} onChange={(e) => setNewMapping({ ...newMapping, title: e.target.value })} placeholder="Weekly team sync" />
+              </div>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Source</label>
+                <select className="input" value={newMapping.sourceType} onChange={(e) => setNewMapping({ ...newMapping, sourceType: e.target.value })}>
+                  <option value="all">Any</option>
+                  <option value="meeting">Meeting</option>
+                  <option value="email">Email</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Jira issue</label>
+                <input className="input" value={newMapping.jiraIssue} onChange={(e) => setNewMapping({ ...newMapping, jiraIssue: e.target.value })} placeholder="SVC-123" />
+              </div>
+              <button className="btn btn-navy btn-sm" onClick={addCalendarMapping}>Add rule</button>
+            </div>
+          </div>
+
+          {/* Create a recurring route */}
+          <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+            <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 10 }}>Create a recurring rule</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Project</label>
+                <select className="input" value={newRoute.projectId} onChange={(e) => setNewRoute({ ...newRoute, projectId: e.target.value })}>
+                  <option value="">Any</option>
+                  {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Task type</label>
+                <select className="input" value={newRoute.taskTypeId} onChange={(e) => setNewRoute({ ...newRoute, taskTypeId: e.target.value })}>
+                  <option value="">Any</option>
+                  {taskTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Source</label>
+                <select className="input" value={newRoute.sourceType} onChange={(e) => setNewRoute({ ...newRoute, sourceType: e.target.value })}>
+                  <option value="">Any</option>
+                  <option value="meeting">Meeting</option>
+                  <option value="email">Email</option>
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Jira issue</label>
+                <input className="input" value={newRoute.jiraKey} onChange={(e) => setNewRoute({ ...newRoute, jiraKey: e.target.value })} placeholder="SVC-123" />
+              </div>
+              <button className="btn btn-navy btn-sm" onClick={addRoute}>Add rule</button>
+            </div>
+          </div>
+
+          {/* Assign a keyword */}
+          {unassignedKeywords.length > 0 && (
+            <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 10 }}>Assign a keyword</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+                <div>
+                  <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Keyword</label>
+                  <select className="input" value={keywordAssign.keywordId} onChange={(e) => setKeywordAssign({ ...keywordAssign, keywordId: e.target.value })}>
+                    <option value="">Choose a keyword</option>
+                    {unassignedKeywords.slice(0, 50).map((kw) => <option key={kw.id} value={kw.id}>{kw.word}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Project</label>
+                  <select className="input" value={keywordAssign.projectId} onChange={(e) => setKeywordAssign({ ...keywordAssign, projectId: e.target.value })}>
+                    <option value="">None</option>
+                    {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 12.5, color: 'var(--slate-500)', display: 'block', marginBottom: 4 }}>Task type</label>
+                  <select className="input" value={keywordAssign.taskTypeId} onChange={(e) => setKeywordAssign({ ...keywordAssign, taskTypeId: e.target.value })}>
+                    <option value="">None</option>
+                    {taskTypes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <button className="btn btn-navy btn-sm" onClick={assignKeyword}>Assign</button>
+              </div>
+            </div>
+          )}
+
           {/* Match by keyword */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 8, marginTop: 8 }}>
             <h3 style={{ fontSize: 16.5, fontWeight: 700, color: 'var(--navy)' }}>Match by keyword</h3>

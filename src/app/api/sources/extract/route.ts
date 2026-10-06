@@ -50,7 +50,7 @@ export async function POST(request: Request) {
       try {
         sendProgress('extracting', 'Connecting to Microsoft 365...', 2);
 
-        const allItems: { type: string; subject: string; body: string; date: string; duration_minutes?: number; external_id?: string }[] = [];
+        const allItems: { type: string; subject: string; body: string; date: string; duration_minutes?: number; external_id?: string; conversation_id?: string }[] = [];
 
         if (types.includes('email')) {
           sendProgress('extracting', 'Fetching sent emails from Microsoft Graph...', 5);
@@ -81,7 +81,7 @@ export async function POST(request: Request) {
         const meetingCount = allItems.filter((d) => d.type === 'meeting').length;
 
         for (const item of allItems) {
-          const { inserted } = insertSourceIfNew(item.type, item.subject, item.body, item.date, item.duration_minutes, item.external_id);
+          const { inserted } = insertSourceIfNew(item.type, item.subject, item.body, item.date, item.duration_minutes, item.external_id, item.conversation_id);
           processedCount++;
           if (inserted) newCount++;
           else duplicateCount++;

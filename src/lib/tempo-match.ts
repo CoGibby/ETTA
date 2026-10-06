@@ -37,7 +37,7 @@ function normalizeText(value: string): string {
 }
 
 function entryMinutes(entry: MatchableEntry): number {
-  return entry.duration_minutes + (entry.context_minutes || 0);
+  return entry.duration_minutes;
 }
 
 function hasDirectCommentMatch(entry: MatchableEntry, worklog: TempoWorklog): boolean {

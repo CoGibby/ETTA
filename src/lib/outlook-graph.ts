@@ -1,7 +1,7 @@
-﻿import fs from 'fs';
-import path from 'path';
+import fs from 'fs';
+import { getDataFilePath } from './app-paths';
 import crypto from 'crypto';
-import { getSetting } from '@/lib/db';
+import { getSetting, setSetting } from '@/lib/db';
 
 // ---------- Config ----------
 
@@ -31,26 +31,12 @@ function getScopes(): string[] {
   return raw.split(/\s+/).filter(Boolean);
 }
 
-function getDataDir(): string {
-  const dataDir = process.env.ETTA_DATA_DIR;
-  return dataDir ? path.resolve(dataDir) : path.resolve('./data');
-}
-
 function getCachePath(): string {
-  const cachePath = process.env.MSAL_CACHE_PATH;
-  return cachePath ? path.resolve(cachePath) : path.join(getDataDir(), 'msal_cache.json');
+  return getDataFilePath('msal_cache.json');
 }
 
 function getDeviceFlowPath(): string {
-  const flowPath = process.env.MSAL_FLOW_PATH;
-  return flowPath ? path.resolve(flowPath) : path.join(getDataDir(), 'outlook_device_flow.json');
-}
-
-function ensureDataDir(): void {
-  const dir = getDataDir();
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  return getDataFilePath('outlook_device_flow.json');
 }
 
 // ---------- Token cache ----------
@@ -74,7 +60,6 @@ function loadCache(): TokenCache | null {
 }
 
 function saveCache(cache: TokenCache): void {
-  ensureDataDir();
   fs.writeFileSync(getCachePath(), JSON.stringify(cache, null, 2), 'utf-8');
 }
 
@@ -89,7 +74,7 @@ function clearCache(): void {
 ﻿// ---------- Auth: Authorization Code flow with PKCE ----------
 
 function getPkcePath(): string {
-  return path.join(getDataDir(), 'outlook_pkce.json');
+  return getDataFilePath('outlook_pkce.json');
 }
 
 function base64UrlEncode(buf: Buffer): string {
@@ -118,7 +103,6 @@ export function buildAuthUrl(
   const verifier = generatePkceVerifier();
   const challenge = computePkceChallenge(verifier);
 
-  ensureDataDir();
   fs.writeFileSync(getPkcePath(), JSON.stringify({ verifier, redirectUri }), 'utf-8');
 
   const params = new URLSearchParams({
@@ -322,8 +306,20 @@ export function logout(): void {
 
 export function htmlToPlainText(html: string): string {
   if (!html) return '';
-  // Strip tags
-  let text = html.replace(/<[^>]+>/g, ' ');
+  // Decode common HTML entities that can break code matching
+  let text = html
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, String.fromCharCode(34))
+    .replace(/&#39;/g, String.fromCharCode(39))
+    .replace(/&#45;/g, '-')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+  // Strip style and script blocks entirely
+  text = text.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, ' ');
+  text = text.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, ' ');
+  // Strip remaining tags
+  text = text.replace(/<[^>]+>/g, ' ');
   // Normalize whitespace
   text = text.replace(/\r\n/g, '\n');
   text = text.replace(/\n{3,}/g, '\n\n');
@@ -376,41 +372,7 @@ interface GraphItem {
   date: string;
   duration_minutes?: number;
   external_id?: string;
-}
-
-type GraphRecord = Record<string, unknown>;
-
-interface GraphPage<T> {
-  value?: T[];
-  '@odata.nextLink'?: string;
-}
-
-interface GraphBody {
-  content?: string;
-  contentType?: string;
-}
-
-interface GraphEmailMessage extends GraphRecord {
-  subject?: string;
-  sentDateTime?: string;
-  body?: GraphBody;
-}
-
-interface GraphCalendarEvent extends GraphRecord {
-  isCancelled?: boolean;
-  isAllDay?: boolean;
-  showAs?: string;
-  categories?: string[];
-  subject?: string;
-  attendees?: unknown[];
-  onlineMeeting?: unknown;
-  body?: GraphBody;
-  responseStatus?: { response?: string };
-  isOrganizer?: boolean;
-  start?: { dateTime?: string };
-  end?: { dateTime?: string };
-  iCalUId?: string;
-  seriesMasterId?: string;
+  conversation_id?: string;
 }
 
 async function graphHeaders(): Promise<Record<string, string>> {
@@ -421,9 +383,9 @@ async function graphHeaders(): Promise<Record<string, string>> {
   };
 }
 
-async function paginate<T extends GraphRecord>(url: string): Promise<T[]> {
+async function paginate(url: string): Promise<any[]> {
   const headers = await graphHeaders();
-  const all: T[] = [];
+  const all: any[] = [];
   let currentUrl = url;
 
   while (currentUrl) {
@@ -431,7 +393,7 @@ async function paginate<T extends GraphRecord>(url: string): Promise<T[]> {
     if (!res.ok) {
       throw new Error(`Graph API error: ${res.status} ${res.statusText}`);
     }
-    const data = (await res.json()) as GraphPage<T>;
+    const data = await res.json();
     if (data.value) {
       all.push(...data.value);
     }
@@ -466,10 +428,10 @@ export async function fetchSentEmails(
   const startIso = `${startDate}T00:00:00Z`;
   const endIso = `${endDate}T23:59:59Z`;
   const filterQuery = `sentDateTime ge ${startIso} and sentDateTime lt ${endIso}`;
-  const select = encodeURIComponent('subject,body,sentDateTime');
+  const select = encodeURIComponent('subject,body,sentDateTime,conversationId');
   const url = `https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$filter=${encodeURIComponent(filterQuery)}&$select=${select}&$top=50&$orderby=sentDateTime%20desc`;
 
-  const messages = await paginate<GraphEmailMessage>(url);
+  const messages = await paginate(url);
   const items: GraphItem[] = [];
   let scanned = 0;
 
@@ -499,6 +461,7 @@ export async function fetchSentEmails(
       subject,
       body: replyOnly.slice(0, 5000),
       date: sentLocal,
+      conversation_id: msg.conversationId || '',
     });
   }
 
@@ -509,7 +472,7 @@ export async function fetchSentEmails(
   return items;
 }
 
-function includeCalendarEvent(event: GraphCalendarEvent, includeTentative: boolean): boolean {
+function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
   if (event.isCancelled) return false;
   if (event.isAllDay) return false;
   if (String(event.showAs || '').toLowerCase() === 'free') return false;
@@ -566,7 +529,7 @@ export async function fetchCalendarEvents(
   const select = encodeURIComponent('subject,body,start,end,responseStatus,isOrganizer,isCancelled,isAllDay,iCalUId,seriesMasterId,attendees,categories,onlineMeeting,showAs');
   const url = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(startIso)}&endDateTime=${encodeURIComponent(endExclusive)}&$select=${select}&$top=50`;
 
-  const events = await paginate<GraphCalendarEvent>(url);
+  const events = await paginate(url);
   const items: GraphItem[] = [];
   let scanned = 0;
 
