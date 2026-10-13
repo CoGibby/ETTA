@@ -63,6 +63,7 @@ async function dedupWorklogsAgainstTempo(
 
     // Sum existing Tempo minutes for this issue on this day.
     const existingByIssue = new Map<string, number>();
+    const consumedByIssue = new Map<string, number>();
     for (const t of tempoEntries) {
       const key = (t.issueKey || '').toUpperCase();
       if (!key) continue;
@@ -71,13 +72,17 @@ async function dedupWorklogsAgainstTempo(
 
     for (const w of dayWorklogs) {
       const issueKey = (w.issueKey || '').toUpperCase();
-      const existing = existingByIssue.get(issueKey) || 0;
+      const allocated = existingByIssue.get(issueKey) || 0;
+      const consumed = consumedByIssue.get(issueKey) || 0;
+      const existing = Math.max(0, allocated - consumed);
       const requested = w.timeSpentMinutes;
 
       if (existing >= requested) {
+        consumedByIssue.set(issueKey, consumed + requested);
         skipped.push({ issueKey, date, timeSpentMinutes: requested, reason: 'All time already allocated' });
       } else if (existing > 0) {
         const remaining = requested - existing;
+        consumedByIssue.set(issueKey, allocated);
         kept.push({ ...w, timeSpentMinutes: remaining, comment: w.comment });
         partial.push({ issueKey, date, requested, existing, pushed: remaining });
       } else {

@@ -499,8 +499,14 @@ export function CalendarSection({
   };
 
   const pushEntry = async (entry: DisplayEntry) => {
-    if (invalidIssueIds.has(entry.id) || !entry.jira_issue) return;
+    if (invalidIssueIds.has(entry.id)) return;
     await materializeMappedIssue(entry);
+    const mapping = mappingFor(entry);
+    if (!entry.jira_issue && !mapping?.jiraIssue) {
+      setBanner('This entry needs a Jira issue before it can be pushed.');
+      setTimeout(() => setBanner(null), 4000);
+      return;
+    }
     setPushing(true);
     try {
       const res = await fetch('/api/jira/push', {
@@ -737,14 +743,22 @@ export function CalendarSection({
                                   {st === 'likely' && <span className="text-muted">Likely in Jira</span>}
                                   {st === 'partial' && !canPushRemaining && <span className="text-muted">Partly logged</span>}
                                   {st === 'partial' && canPushRemaining && (
-                                    <button className="btn btn-primary btn-sm" disabled={pushing} onClick={() => pushEntry(e)}>Push rest</button>
+                                    <div>
+                                      <button className="btn btn-primary btn-sm" disabled={pushing} title="Send only the time not yet in Jira" onClick={() => pushEntry(e)}>Push rest</button>
+                                      <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>Logs remaining time only</div>
+                                    </div>
                                   )}
-                                  {st === 'local' && <button className="btn btn-primary btn-sm" disabled={pushing || invalidIssueIds.has(e.id)} onClick={() => pushEntry(e)}>Push</button>}
+                                  {st === 'local' && (
+                                    <button className="btn btn-primary btn-sm" disabled={pushing || invalidIssueIds.has(e.id)} title="Send this time to Jira" onClick={() => pushEntry(e)}>Push</button>
+                                  )}
                                   {st === 'need' && (
                                     <div>
                                       <button className="btn btn-primary btn-sm" disabled title="Add a valid Jira issue first">Push</button>
                                       <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>Needs Jira issue</div>
                                     </div>
+                                  )}
+                                  {(st === 'local' || st === 'need') && (
+                                    <button className="btn btn-secondary btn-sm" style={{ marginTop: 6 }} title="Exclude this and similar entries from tracking" onClick={() => markNotWork(e)}>Not work</button>
                                   )}
                                   {st === 'excluded' && (
                                     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -752,9 +766,6 @@ export function CalendarSection({
                                       <button className="btn btn-secondary btn-sm" onClick={() => includeEntry(e)}>Include</button>
                                       {rule && <button className="btn btn-secondary btn-sm" onClick={() => stopExcluding(e)}>Stop excluding</button>}
                                     </div>
-                                  )}
-                                  {st !== 'excluded' && st !== 'cloud' && st !== 'partial' && st !== 'likely' && (
-                                    <button className="btn btn-secondary btn-sm" onClick={() => markNotWork(e)}>Not work</button>
                                   )}
                                 </td>
                               </tr>
