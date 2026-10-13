@@ -67,6 +67,29 @@ spctl -a -vv -t execute "ETTA Time Tracker.app"
 Expected: the app is signed by a Developer ID and `spctl` reports **accepted** / **source=Developer Id**
 / **notarized**. Also confirm both archs (`lipo -archs ...` inside each `.app`).
 
+### Critical: native modules must match the target arch
+The v12 x64 DMG shipped with **darwin-arm64** `better-sqlite3` and `sharp` native binaries,
+which crashed the embedded Next.js server on Intel Macs ("Internal service error", blank page).
+When building the x64 DMG on an Apple Silicon Mac, the standalone `node_modules` natives are
+built for arm64 unless you force the arch. Do one of the following for the x64 build:
+
+```bash
+# Preferred: build on a native x64 (Intel) runner/machine.
+
+# On an arm64 Mac, force x64 natives before staging the standalone server:
+npm ci
+npm rebuild better-sqlite3 --target_arch=x64 --build-from-source=false
+cd node_modules/sharp && npm_config_arch=x64 npm install --os=darwin --cpu=x64 && cd ../..
+npm run package:mac   # then verify with lipo that next/.../better_sqlite3.node is x64
+```
+
+Verify inside the built app before handing back:
+```bash
+file "ETTA Time Tracker.app/Contents/Resources/next/node_modules/better-sqlite3/prebuilds/"*.node
+file "ETTA Time Tracker.app/Contents/Resources/next/node_modules/@img/sharp-darwin-"*/lib/*.node
+```
+The x64 DMG must show `darwin-x64`; the arm64 DMG must show `darwin-arm64`.
+
 ## 6. What to send back
 - `ETTA-Time-Tracker-0.9.0-ppmo.12-{arm64,x64}.dmg`
 - `ETTA-Time-Tracker-0.9.0-ppmo.12-{arm64,x64}.zip`

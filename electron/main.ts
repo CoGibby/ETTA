@@ -9,6 +9,19 @@ let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 let applicationOrigin: string | null = null;
 
+const ENTRA_DEFAULTS: Record<string, string> = {
+  AZURE_CLIENT_ID: "b13c664e-d672-412b-bb7a-4eb9e53e059c",
+  AZURE_TENANT_ID: "8a198873-4fec-4e76-8182-ca479edbbd60",
+  AZURE_SCOPES: "Mail.Read Calendars.Read User.Read offline_access",
+  OUTLOOK_BACKEND: "graph",
+};
+
+for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
+  if (!process.env[key]) {
+    process.env[key] = value;
+  }
+}
+
 function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
