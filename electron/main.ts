@@ -8,6 +8,7 @@ const isDevelopment = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 let applicationOrigin: string | null = null;
+let dataDirectory: string | null = null;
 
 const ENTRA_DEFAULTS: Record<string, string> = {
   AZURE_CLIENT_ID: "b13c664e-d672-412b-bb7a-4eb9e53e059c",
@@ -65,7 +66,7 @@ async function startPackagedServer(): Promise<string> {
   const port = await reservePort();
   const nextDirectory = path.join(process.resourcesPath, "next");
   const serverPath = path.join(nextDirectory, "server.js");
-  const dataDirectory = path.join(app.getPath("userData"), "data");
+  dataDirectory = path.join(app.getPath("userData"), "data");
   const scriptsDirectory = path.join(process.resourcesPath, "outlook-scripts");
 
   fs.mkdirSync(dataDirectory, { recursive: true });
@@ -82,6 +83,8 @@ async function startPackagedServer(): Promise<string> {
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
       ETTA_DATA_DIR: dataDirectory,
+      TIMEKEEPER_DATA_DIR: dataDirectory,
+      ELECTRON_USER_DATA: dataDirectory,
       DB_PATH: path.join(dataDirectory, "timekeeper.db"),
       MSAL_CACHE_PATH: path.join(dataDirectory, "msal-cache.json"),
       MSAL_FLOW_PATH: path.join(dataDirectory, "outlook-device-flow.json"),
@@ -125,7 +128,7 @@ function createWindow(origin: string): void {
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!applicationOrigin || !url.startsWith(applicationOrigin)) event.preventDefault();
+    if (!isAllowedNavigation(url)) event.preventDefault();
   });
 
   void mainWindow.loadURL(origin);
@@ -137,6 +140,18 @@ function createWindow(origin: string): void {
 function stopServer(): void {
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
   serverProcess = null;
+}
+
+function isOutlookSignInInProgress(): boolean {
+  if (!dataDirectory) return false;
+  return fs.existsSync(path.join(dataDirectory, "outlook_pkce.json"));
+}
+
+function isAllowedNavigation(rawUrl: string): boolean {
+  if (isDevelopment) return true;
+  if (!applicationOrigin) return false;
+  if (rawUrl.startsWith(applicationOrigin)) return true;
+  return isOutlookSignInInProgress() && rawUrl.startsWith("https://");
 }
 
 const hasInstanceLock = app.requestSingleInstanceLock();
