@@ -123,6 +123,7 @@ function createWindow(origin: string): void {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (applicationOrigin && url.startsWith(applicationOrigin)) return { action: "allow" };
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
   });
