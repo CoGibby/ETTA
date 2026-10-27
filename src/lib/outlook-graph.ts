@@ -1,15 +1,25 @@
 import fs from 'fs';
 import { getDataFilePath } from './app-paths';
 import crypto from 'crypto';
-import { getSetting, setSetting } from '@/lib/db';
+import { getSetting } from '@/lib/db';
 
 // ---------- Config ----------
+
+// Mirrors electron/main.ts ENTRA_DEFAULTS (the v15 sealed-config fix) so the
+// Entra app registration is available in every runtime, including the web
+// server started outside the packaged desktop shell.
+const ENTRA_DEFAULTS = {
+  clientId: 'b13c664e-d672-412b-bb7a-4eb9e53e059c',
+  tenantId: '8a198873-4fec-4e76-8182-ca479edbbd60',
+  scopes: 'Mail.Read Calendars.Read User.Read offline_access',
+};
 
 function getClientId(): string {
   return (
     getSetting('azure_client_id') ||
     process.env.AZURE_CLIENT_ID ||
     process.env.MS_CLIENT_ID ||
+    ENTRA_DEFAULTS.clientId ||
     ''
   ).trim();
 }
@@ -19,6 +29,7 @@ function getTenantId(): string {
     getSetting('azure_tenant_id') ||
     process.env.AZURE_TENANT_ID ||
     process.env.MS_TENANT_ID ||
+    ENTRA_DEFAULTS.tenantId ||
     'common'
   ).trim() || 'common';
 }
@@ -27,6 +38,7 @@ function getScopes(): string[] {
   const raw =
     getSetting('azure_scopes') ||
     process.env.AZURE_SCOPES ||
+    ENTRA_DEFAULTS.scopes ||
     'Mail.Read Calendars.Read User.Read offline_access';
   return raw.split(/\s+/).filter(Boolean);
 }
@@ -383,8 +395,11 @@ async function graphHeaders(): Promise<Record<string, string>> {
   };
 }
 
+// Graph API items are dynamic payloads; callers narrow the fields they use.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function paginate(url: string): Promise<any[]> {
   const headers = await graphHeaders();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const all: any[] = [];
   let currentUrl = url;
 
@@ -472,6 +487,7 @@ export async function fetchSentEmails(
   return items;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
   if (event.isCancelled) return false;
   if (event.isAllDay) return false;

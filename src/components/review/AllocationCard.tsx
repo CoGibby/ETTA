@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 
 export interface AllocRow {
   key: string;
@@ -57,6 +57,7 @@ interface Props {
   totalHours: number;
   meetingsHours: number;
   tempoHours?: number;
+  historySuggestions?: { key: string; name: string; score: number }[];
   setTotalHours: (n: number) => void;
   unassigned: { id: number; key: string; name: string }[];
   onAddToActive: (key: string, name: string) => void;
@@ -70,11 +71,13 @@ interface Props {
 
 export function AllocationCard({
   rows, setRows, totalHours, meetingsHours, tempoHours, setTotalHours,
+  historySuggestions,
   unassigned, onAddToActive, onRemoveFromActive, onDeleteUnassigned, onAddProject,
   selectedDateKey, estimates,
   onPushed,
 }: Props) {
   const workTime = Math.max(0, totalHours - meetingsHours - (tempoHours || 0));
+  const suggestions = useMemo(() => historySuggestions || [], [historySuggestions]);
   const anyLocked = rows.some((r) => r.locked);
   const dragRef = useRef<{ targetKey: string; trackEl: HTMLElement } | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -94,6 +97,70 @@ export function AllocationCard({
   const setComment = useCallback((key: string, text: string) => {
     setRows((prev) => prev.map((r) => r.key === key ? { ...r, comment: text } : r));
   }, [setRows]);
+
+  // Propose a day split from recent Jira activity: locked rows keep their exact
+  // share, the rest is distributed across active rows and recent issues in
+  // 15-minute increments (the jira-worklogs skill's rounding convention).
+  const applyFill = useCallback(() => {
+    const totalMinutes = Math.round(workTime * 60);
+    const usable = Math.floor(totalMinutes / 15) * 15;
+    if (usable <= 0) return;
+
+    const lockedRows = rows.filter((r) => r.locked && r.key.trim());
+    const lockedMinutes = lockedRows.reduce((s, r) => s + (r.pct / 100) * totalMinutes, 0);
+    const remaining = Math.max(0, usable - Math.round(lockedMinutes));
+    if (remaining < 15) return;
+
+    const scoreByKey = new Map(suggestions.map((c) => [c.key.toUpperCase(), c.score]));
+    const seen = new Set<string>();
+    const existingUnlocked = rows.filter((r) => !r.locked && r.key.trim());
+    existingUnlocked.forEach((r) => seen.add(r.key.toUpperCase()));
+
+    type FillCandidate = { key: string; name: string; score: number; comment?: string };
+    const candidates: FillCandidate[] = existingUnlocked.map((r) => ({
+      key: r.key,
+      name: r.name,
+      score: scoreByKey.get(r.key.toUpperCase()) ?? 1,
+      comment: r.comment,
+    }));
+    for (const suggestion of suggestions) {
+      if (candidates.length >= 6) break;
+      if (seen.has(suggestion.key.toUpperCase())) continue;
+      seen.add(suggestion.key.toUpperCase());
+      candidates.push({ key: suggestion.key, name: suggestion.name, score: suggestion.score });
+    }
+    if (candidates.length === 0) return;
+
+    const sumScore = candidates.reduce((s, c) => s + c.score, 0);
+    if (sumScore <= 0) return;
+    const bases = candidates.map((c) => Math.floor((remaining * (c.score / sumScore)) / 15) * 15);
+    const remainders = candidates.map((c, i) => remaining * (c.score / sumScore) - bases[i]);
+    let leftover = remaining - bases.reduce((s, b) => s + b, 0);
+    const order = candidates
+      .map((_, i) => i)
+      .sort((a, b) => remainders[b] - remainders[a] || candidates[b].score - candidates[a].score);
+    let orderIndex = 0;
+    while (leftover >= 15) {
+      bases[order[orderIndex % order.length]] += 15;
+      leftover -= 15;
+      orderIndex += 1;
+    }
+
+    const filled = candidates
+      .map((c, i) => ({ candidate: c, minutes: bases[i] }))
+      .filter((item) => item.minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes)
+      .map((item) => ({
+        key: item.candidate.key,
+        name: item.candidate.name,
+        pct: Math.round((item.minutes / totalMinutes) * 100 * 1000) / 1000,
+        locked: false,
+        comment: item.candidate.comment,
+      }));
+    if (filled.length === 0) return;
+
+    setRows(() => [...lockedRows, ...filled]);
+  }, [rows, workTime, suggestions, setRows]);
 
   const pushToJira = () => {
     if (rows.length === 0 || workTime <= 0) return;
@@ -351,6 +418,19 @@ export function AllocationCard({
         )}
       </div>
 
+      {workTime > 0 && suggestions.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 0 10px', flexWrap: 'wrap' }}>
+          <span className="text-muted" style={{ fontSize: 13, minWidth: 0 }}>
+            {rows.length === 0
+              ? 'Not sure how to split your time? Start from your recent Jira activity.'
+              : 'Rebalance this split to match your recent Jira activity.'}
+          </span>
+          <button className="btn btn-secondary btn-sm" style={{ textTransform: 'none', letterSpacing: 0, flexShrink: 0 }} onClick={applyFill}>
+            {rows.length === 0 ? `Fill to ${fmtHrsMin(workTime)}` : 'Re-suggest split'}
+          </button>
+        </div>
+      )}
+
       <div className="alloc-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         Split your time
         {anyLocked && (
@@ -370,7 +450,8 @@ export function AllocationCard({
           const overBy = estHours !== undefined ? Math.max(0, hrs - estHours) : 0;
           const isClosed = estData ? !estData.isOpen : false;
           const isMeeting = /meeting/i.test(row.name);
-          const showMeetingPrompt = isMeeting && !row.comment;
+          const isGeneral = /^SVCOPS-/i.test(row.key);
+          const showMeetingPrompt = (isMeeting || isGeneral) && !row.comment;
           const showCommentBox = commentKey === row.key;
           return (
             <div key={row.key} className={'alloc-row' + (row.locked ? ' locked' : '')}>
@@ -439,7 +520,7 @@ export function AllocationCard({
                 <div style={{ padding: '2px 12px 6px' }}>
                   <button onClick={() => setCommentKey(row.key)}
                     style={{ background: 'none', border: 'none', color: 'var(--navy)', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0, textDecoration: 'underline' }}>
-                    Consider adding meeting notes
+                    {isMeeting ? 'Consider adding meeting notes' : 'Consider adding detail about this general work'}
                   </button>
                 </div>
               )}

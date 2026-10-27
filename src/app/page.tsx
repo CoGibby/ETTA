@@ -46,6 +46,12 @@ interface TempoHistoryCandidate {
   lastDate: string;
 }
 
+interface HistorySuggestion {
+  key: string;
+  name: string;
+  score: number;
+}
+
 function buildTempoHistoryCandidates(
   worklogs: (TempoWorklog & { date: string })[],
   startDate: string,
@@ -120,6 +126,7 @@ export default function ReviewPage() {
   const [dataRefreshToken, setDataRefreshToken] = useState(0);
   const hasLoadedOnceRef = useRef(false);
   const [estimates, setEstimates] = useState<Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>>({});
+  const [historySuggestions, setHistorySuggestions] = useState<HistorySuggestion[]>([]);
   const statsRequestRef = useRef(0);
   const estimatesRef = useRef(estimates);
   useEffect(() => { estimatesRef.current = estimates; }, [estimates]);
@@ -381,23 +388,20 @@ export default function ReviewPage() {
         : [];
 
       // Recent Tempo history is the strongest signal of what a user works on.
-      // Seed it whenever the selected day has no saved allocation rows.
-      let seeded = false;
-      if (!hasSavedRows && recentTempoCandidates.length > 0) {
-        const candidates = recentTempoCandidates;
-        const favoriteMap = new Map(
-          favoritesRef.current.map((favorite) => [favorite.jira_key.toUpperCase(), favorite.short_name || favorite.jira_name])
-        );
-        const selected: { key: string; name: string; score: number }[] = [];
+      // Validate the top candidates once so both the empty-card seeding and the
+      // fill-to-8-hours suggestion can rely on real issue names.
+      const favoriteMap = new Map(
+        favoritesRef.current.map((favorite) => [favorite.jira_key.toUpperCase(), favorite.short_name || favorite.jira_name])
+      );
+      const selected: HistorySuggestion[] = [];
+      for (const candidate of recentTempoCandidates) {
+        if (selected.some((item) => item.key === candidate.key)) continue;
+        const favoriteName = favoriteMap.get(candidate.key);
 
-        for (const candidate of candidates) {
-          if (selected.some((item) => item.key === candidate.key)) continue;
-          const favoriteName = favoriteMap.get(candidate.key);
-          let name: string;
-
-          if (favoriteName) {
-            name = favoriteName;
-          } else {
+        if (favoriteName) {
+          selected.push({ key: candidate.key, name: favoriteName, score: candidate.score });
+        } else {
+          try {
             const validateRes = await fetch('/api/jira/validate', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -405,32 +409,37 @@ export default function ReviewPage() {
             });
             const validateData = await validateRes.json().catch(() => ({ valid: false }));
             if (!validateData.valid) continue;
-            name = validateData.jira_name || candidate.key;
-            await fetch('/api/favorites', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ jira_key: candidate.key, jira_name: name }),
-            }).catch(() => {});
-          }
-
-          selected.push({ key: candidate.key, name, score: candidate.score });
-          if (selected.length === 3) break;
+            const name = validateData.jira_name || candidate.key;
+            selected.push({ key: candidate.key, name, score: candidate.score });
+            if (!hasSavedRows) {
+              await fetch('/api/favorites', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jira_key: candidate.key, jira_name: name }),
+              }).catch(() => {});
+            }
+          } catch { continue; }
         }
+        if (selected.length === 3) break;
+      }
+      if (requestId !== statsRequestRef.current) return;
+      setHistorySuggestions(selected);
 
-        if (selected.length > 0) {
-          if (requestId !== statsRequestRef.current) return;
-          const percentages = proportionalPercents(selected.map((item) => item.score));
-          const seededRows = selected.map((item, index) => ({
-            key: item.key,
-            name: item.name,
-            pct: percentages[index],
-            locked: false,
-          }));
-          rowsRef.current = seededRows;
-          setRows(seededRows);
-          await refreshFavorites();
-          seeded = true;
-        }
+      // Seed the card whenever the selected day has no saved allocation rows.
+      let seeded = false;
+      if (!hasSavedRows && selected.length > 0) {
+        if (requestId !== statsRequestRef.current) return;
+        const percentages = proportionalPercents(selected.map((item) => item.score));
+        const seededRows = selected.map((item, index) => ({
+          key: item.key,
+          name: item.name,
+          pct: percentages[index],
+          locked: false,
+        }));
+        rowsRef.current = seededRows;
+        setRows(seededRows);
+        await refreshFavorites();
+        seeded = true;
       }
 
       if (!hasSavedRows && !seeded && dayEntries.length > 0) {
@@ -660,6 +669,7 @@ export default function ReviewPage() {
         totalHours={totalHours}
         meetingsHours={meetingsHours}
         tempoHours={tempoHours}
+        historySuggestions={historySuggestions}
         setTotalHours={setTotalHours}
         unassigned={unassigned}
         onAddToActive={onAddToActive}
