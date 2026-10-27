@@ -123,6 +123,12 @@ function createWindow(origin: string): void {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isOutlookAuthStartUrl(url)) {
+      void shell.openExternal(url).catch((error) => {
+        appendServerLog(`\nOpening Outlook sign-in in the default browser failed: ${String(error)}\n`);
+      });
+      return { action: "deny" };
+    }
     if (applicationOrigin && url.startsWith(applicationOrigin)) return { action: "allow" };
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -146,6 +152,16 @@ function stopServer(): void {
 function isOutlookSignInInProgress(): boolean {
   if (!dataDirectory) return false;
   return fs.existsSync(path.join(dataDirectory, "outlook_pkce.json"));
+}
+
+function isOutlookAuthStartUrl(rawUrl: string): boolean {
+  if (!applicationOrigin) return false;
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === new URL(applicationOrigin).origin && url.pathname === "/api/outlook/auth/start";
+  } catch {
+    return false;
+  }
 }
 
 function isAllowedNavigation(rawUrl: string): boolean {
