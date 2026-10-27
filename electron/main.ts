@@ -24,13 +24,17 @@ for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
   }
 }
 
-// In-place updates via electron-updater. Poll only when packaged (not in dev).
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
-autoUpdater.on("error", (error) => appendServerLog(`\nUpdate error: ${String(error)}\n`));
-autoUpdater.on("update-downloaded", () => {
-  mainWindow?.webContents.send("update-downloaded");
-});
+// In-place updates via electron-updater. Internal prerelease builds (version
+// contains "-ppmo") never auto-update; the feed goes live at public release.
+const updaterEnabled = !isDevelopment && !app.getVersion().includes("-ppmo");
+if (updaterEnabled) {
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on("error", (error) => appendServerLog(`\nUpdate error: ${String(error)}\n`));
+  autoUpdater.on("update-downloaded", () => {
+    mainWindow?.webContents.send("update-downloaded");
+  });
+}
 
 function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -196,7 +200,7 @@ if (!hasInstanceLock) {
       : await startPackagedServer();
     createWindow(origin);
 
-    if (!isDevelopment) {
+    if (updaterEnabled) {
       void autoUpdater
         .checkForUpdatesAndNotify()
         .catch(() => { /* update check is best-effort */ });
