@@ -717,6 +717,10 @@ export function CalendarSection({
                             const mapping = mappingFor(e);
                             const rule = exclusionRuleFor(e);
                             const canPushRemaining = st === 'partial' && e.underlying.some((item) => item.status !== 'pushed' && item.status !== 'excluded' && (item.jira_issue || mapping?.jiraIssue));
+                            // "Push rest" is only honest when part of this entry's time is
+                            // confirmed in Jira. A likely Tempo match alone (ETTA-113) means
+                            // nothing was pushed from this entry, so the primary action is Push.
+                            const hasConfirmedPush = e.underlying.some((item) => item.status !== 'excluded' && tempoCoverageFor(item) === 'full');
                             return (
                               <tr key={e.id}>
                                 <td>
@@ -744,8 +748,8 @@ export function CalendarSection({
                                   {st === 'partial' && !canPushRemaining && <span className="text-muted">Partly logged</span>}
                                   {st === 'partial' && canPushRemaining && (
                                     <div>
-                                      <button className="btn btn-primary btn-sm" disabled={pushing} title="Send only the time not yet in Jira" onClick={() => pushEntry(e)}>Push rest</button>
-                                      <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>Logs remaining time only</div>
+                                      <button className="btn btn-primary btn-sm" disabled={pushing} title={hasConfirmedPush ? 'Send only the time not yet in Jira' : 'Send this time to Jira; time already logged is skipped automatically'} onClick={() => pushEntry(e)}>{hasConfirmedPush ? 'Push rest' : 'Push'}</button>
+                                      <div className="text-muted" style={{ fontSize: 12, marginTop: 3 }}>{hasConfirmedPush ? 'Logs remaining time only' : 'Skips time already in Jira'}</div>
                                     </div>
                                   )}
                                   {st === 'local' && (
