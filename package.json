@@ -21,6 +21,8 @@
     "package:mac": "npm run build && electron-builder --mac --publish never",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "package:mac:universal": "npm run build && electron-builder --mac --universal",
+    "package:win:internal": "npm run build && electron-builder --win nsis --config.win.signAndEditExecutable=false",
+    "package:mac": "npm run build && electron-builder --mac",
     "lint": "eslint",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "pretest": "node scripts/clean-test-db.mjs",

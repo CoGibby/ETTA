@@ -44,6 +44,8 @@ npm run package:mac        # macOS .dmg + .zip for arm64 and x64
 
 Windows installer output is written to `artifacts/`.
 
+For an internal PPMO test build, use `npm run package:win:internal`, then follow the [PPMO testing guide](docs/ppmo-testing.md) for checksum generation, clean-machine validation, and known limitations.
+
 ## Releases & in-place updates
 
 Releases are built by GitHub Actions on version tags, so installers are no longer shipped by
