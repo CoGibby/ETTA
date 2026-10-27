@@ -17,10 +17,10 @@ The production desktop application starts the Next.js standalone server on a pri
 
 ## Development
 
-Prerequisites:
+Prerequisites for the current migration stage:
 
 - Node.js 18 or newer
-- Windows Build Tools with the Visual Studio C++ workload for native modules and installer packaging
+- Python 3.9 or newer for the legacy Outlook helper
 
 ```powershell
 npm install
@@ -32,27 +32,49 @@ npm run dev
 
 The Electron window waits for the Next.js development server at `http://127.0.0.1:3000`.
 
-## Tests
-
-```powershell
-npm test
-```
-
-The smoke suite starts an isolated Next.js server on port 3100 and uses a temporary SQLite database. It does not require live Jira or Outlook credentials.
-
 ## Builds
 
 ```powershell
 npm run lint
 npm run typecheck
 npm run build
-npm run package:win
+npm run package:win        # Windows NSIS installer
+npm run package:mac        # macOS .dmg + .zip for arm64 and x64
 ```
 
 Windows installer output is written to `artifacts/`.
 
-## Current status
+## Releases & in-place updates
 
-The desktop shell, TypeScript Microsoft Graph connector, and Windows installer configuration are in place. The supported desktop path no longer requires Python. Remaining release work includes packaged redirect validation, signing, clean-machine installer testing, and update/rollback behavior.
+Releases are built by GitHub Actions on version tags, so installers are no longer shipped by
+hand.
+
+1. Bump `version` in `package.json` (single source of truth).
+2. Commit and push, then tag the release, e.g. `git tag v1.0.1 && git push github v1.0.1`.
+3. The `release` workflow builds and publishes both the Windows (NSIS) installer and the
+   macOS `arm64` + `x64` packages (dmg + zip) to the ETTA GitHub Releases feed
+   (`publish: { provider: github }` in `electron-builder.json`).
+
+`electron-updater` (wired in `electron/main.ts`) polls that same GitHub Releases feed and
+delivers in-place updates - testers install once, and later versions update automatically
+(`autoDownload` and `autoInstallOnAppQuit` are on). Version tags must increase, because
+`electron-updater` compares the feed version against the installed `app.getVersion()`.
+
+`release.yml` publishes **Windows first**. The macOS job is gated on a repository variable
+`RELEASE_MACOS` (set it to `true` once the UCSD Developer ID signing handoff + secrets are
+ready); until then, only Windows artifacts are published to the feed, and macOS is signed separately.
+
+Manual handoff builds are still available:
+- `npm run package:win` / `npm run package:mac` - build locally with `--publish never`.
+- `.github/workflows/build-mac.yml` - manual macOS build (`--publish never`), uploads the
+  `etta-mac` GitHub Actions artifact for offline handoff.
+
+### macOS builds and code signing
+
+ETTA has no Apple Developer signing identity, so macOS artifacts are currently **unsigned**. They must be built on macOS (an Apple machine or the `build-mac` GitHub Actions workflow) - electron-builder cannot produce a `.dmg` on Windows. Gatekeeper will prompt testers to **Open Anyway** on first launch until signing/notarization is added later.
+
+## Migration status
+
+The desktop shell and installer structure are in place. Microsoft Graph still runs through the existing Python helper and will be migrated to Node.js/TypeScript. Until that port is complete, packaged Outlook import requires a bundled Python helper; development can use `.venv`.
 
 See [docs/architecture.md](docs/architecture.md) for the target architecture and remaining work.

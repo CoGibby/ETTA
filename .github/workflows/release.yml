@@ -1,0 +1,112 @@
+# Tag-driven release pipeline for ETTA. On a version tag (v* or *ppmo*) this builds and
+# publishes the Windows NSIS installer immediately through the GitHub Releases feed
+# (provider: github in electron-builder.json), which is what electron-updater uses for
+# in-place updates. The macOS job is gated on the Apple signing/notarization secrets
+# (CSC_LINK + APPLE_API_KEY), so macOS joins the feed only once the UCSD Developer ID
+# identity is added via the signing handoff; no source leaves the UCSD repo for that.
+#
+# `prepare-release` runs first so the GitHub Release exists before either OS uploads
+# assets, avoiding a concurrent create-on-first-upload race.
+
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+      - '*ppmo*'
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create/reuse GitHub release for this tag
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            || echo "release already exists (should not happen on a fresh tag) - continuing"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  windows:
+    needs: prepare-release
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint & typecheck
+        run: |
+          npm run lint
+          npm run typecheck
+
+      - name: Build & publish Windows NSIS installer
+        run: npm run release:win
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_TELEMETRY_DISABLED: '1'
+
+      - name: Upload Windows artifacts (backup + manual handoff)
+        uses: actions/upload-artifact@v4
+        with:
+          name: etta-windows-release
+          path: |
+            artifacts/*.exe
+            artifacts/*.blockmap
+            artifacts/latest.yml
+          if-no-files-found: error
+
+  macos:
+    needs: prepare-release
+    # Publish macOS only when the RELEASE_MACOS repo variable is 'true' (flip it once the UCSD Developer ID signing handoff + secrets are ready). Repo Variables, not secrets, because job-level if cannot read secrets.
+    if: ${{ vars.RELEASE_MACOS == 'true' }}
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint & typecheck
+        run: |
+          npm run lint
+          npm run typecheck
+
+      - name: Build & publish macOS packages (arm64 + x64, dmg + zip)
+        run: |
+          for attempt in 1 2 3; do
+            echo "--- macOS release attempt $attempt ---"
+            if npm run release:mac; then exit 0; fi
+          done
+          echo "macOS release failed after retries"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          NEXT_TELEMETRY_DISABLED: '1'
+
+      - name: Upload macOS artifacts (backup + manual handoff)
+        uses: actions/upload-artifact@v4
+        with:
+          name: etta-mac-release
+          path: |
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+            artifacts/latest-mac.yml
+          if-no-files-found: error

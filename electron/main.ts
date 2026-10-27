@@ -3,6 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { app, BrowserWindow, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 
 const isDevelopment = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
@@ -22,6 +23,14 @@ for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
     process.env[key] = value;
   }
 }
+
+// In-place updates via electron-updater. Poll only when packaged (not in dev).
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("error", (error) => appendServerLog(`\nUpdate error: ${String(error)}\n`));
+autoUpdater.on("update-downloaded", () => {
+  mainWindow?.webContents.send("update-downloaded");
+});
 
 function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -186,6 +195,12 @@ if (!hasInstanceLock) {
       ? process.env.ELECTRON_START_URL || "http://127.0.0.1:3000"
       : await startPackagedServer();
     createWindow(origin);
+
+    if (!isDevelopment) {
+      void autoUpdater
+        .checkForUpdatesAndNotify()
+        .catch(() => { /* update check is best-effort */ });
+    }
   }).catch((error) => {
     appendServerLog(`\nDesktop startup failed: ${String(error)}\n`);
     app.quit();
