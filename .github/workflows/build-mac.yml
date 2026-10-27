@@ -1,0 +1,62 @@
+# Builds ETTA's macOS installation packages (separate arm64 and x64 .dmg + .zip) on a macOS runner.
+# Separate-arch (not universal) so native prebuilds (better-sqlite3, sharp, libvips) each ship
+# cleanly with no @electron/universal merge issues.
+# Unsigned by design (no Apple Developer signing identity yet), so testers use Gatekeeper's
+# "Open Anyway" on first launch. Manual build only (workflow_dispatch); version-tag releases
+# are published by release.yml so a single push doesn't build macOS twice.
+
+name: build-mac
+
+on:
+  # Manual-only build now: tag pushes are handled by release.yml so macOS is not built twice.
+  workflow_dispatch:
+
+jobs:
+  mac-arm64-x64:
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint & typecheck
+        run: |
+          npm run lint
+          npm run typecheck
+
+      - name: Build macOS artifacts (arm64 + x64, dmg + zip)
+        run: |
+          for attempt in 1 2 3; do
+            echo "--- macOS build attempt $attempt ---"
+            if npm run package:mac; then exit 0; fi
+          done
+          echo "macOS build failed after retries"
+          exit 1
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+          NEXT_TELEMETRY_DISABLED: '1'
+
+      - name: List artifacts (informational, non-failing arch report)
+        run: |
+          ls -lhR artifacts
+          find artifacts -name '*.app' | while read app; do
+            echo "== $app"
+            lipo -archs "$app/Contents/MacOS/ETTA Time Tracker" 2>/dev/null || true
+          done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: etta-mac
+          path: |
+            artifacts/**/*.dmg
+            artifacts/**/*.zip
+          if-no-files-found: error

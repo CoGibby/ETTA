@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 
@@ -160,9 +160,9 @@ export function AddProjectModal({ open, onClose, onAdded, existingKeys }: Props)
     <div className="modal-overlay" role="dialog" aria-modal="true"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="modal" style={{ maxWidth: 480 }}>
-        <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 16 }}>Add a project</h3>
+        <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 16 }}>Find a Jira issue</h3>
           <p style={{ fontSize: 13.5, color: 'var(--slate-500)', marginBottom: 14 }}>
-            Start typing an issue key (e.g. ETTA-90) and pick from the results.
+            Type an issue key or summary and pick from the results.
           </p>
 
           {/* Search input with dropdown */}

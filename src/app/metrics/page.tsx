@@ -2,6 +2,8 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { CalendarJiraMapping, getMappedJiraIssue, getTempoCoverageForEntries, TempoCoverage, TempoWorklog } from '@/lib/tempo-match';
+import { buildTempoByDay } from '@/lib/stats';
 
 interface ApiEntry {
   id: number;
@@ -13,6 +15,7 @@ interface ApiEntry {
   jira_issue: string | null;
   jira_name: string | null;
   status: 'pending' | 'pushed' | 'excluded';
+  jira_worklog_id?: string | null;
 }
 
 function toIso(d: Date) { return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
@@ -26,38 +29,99 @@ const toH = (m: number) => Math.round((m / 60) * 10) / 10;
 
 interface IssueRow { key: string; name: string; hours: number; status: 'pushed' | 'hascode' | 'need' | 'block'; }
 
+function dayKey(dateIso: string): string {
+  const d = new Date(dateIso.substring(0, 10) + 'T00:00:00');
+  return d.getFullYear() + '-' + d.getMonth() + '-' + d.getDate();
+}
+
 export default function MetricsPage() {
   const [entries, setEntries] = useState<ApiEntry[]>([]);
+  const [coverage, setCoverage] = useState<Record<number, TempoCoverage>>({});
+  const [mappings, setMappings] = useState<CalendarJiraMapping[]>([]);
   const [loading, setLoading] = useState(true);
+  const [weekOffset, setWeekOffset] = useState(0);
 
   const fetchEntries = useCallback(async () => {
     setLoading(true);
-    const mon = mondayOf(0);
+    const mon = mondayOf(weekOffset);
     const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
     try {
-      const res = await fetch(`/api/entries?startDate=${toIso(mon)}&endDate=${toIso(sun)}`);
+      const [res, tempoRes, mappingsRes] = await Promise.all([
+        fetch(`/api/entries?startDate=${toIso(mon)}&endDate=${toIso(sun)}`),
+        fetch('/api/jira/tempo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dateFrom: toIso(mon), dateTo: toIso(sun) }),
+        }),
+        fetch('/api/calendar-mappings'),
+      ]);
       const data = await res.json();
-      setEntries(data.entries || []);
-    } catch { setEntries([]); }
+      const weekEntries: ApiEntry[] = data.entries || [];
+
+      let calendarMappings: CalendarJiraMapping[] = [];
+      try {
+        const mappingsData = await mappingsRes.json();
+        calendarMappings = mappingsData.mappings || [];
+      } catch { calendarMappings = []; }
+      setMappings(calendarMappings);
+
+      let tempoByDay: Record<string, TempoWorklog[]> = {};
+      try {
+        const tempoData = await tempoRes.json();
+        if (tempoData.success && Array.isArray(tempoData.entries)) {
+          tempoByDay = buildTempoByDay(
+            tempoData.entries.map((t: { issueKey: string; minutes: number; comment?: string; date: string }) => ({
+              issueKey: t.issueKey || '', minutes: t.minutes || 0, comment: t.comment || '', date: t.date || '',
+            }))
+          );
+        }
+      } catch { /* preview ignore tempo */ }
+
+      const byDay: Record<string, ApiEntry[]> = {};
+      for (const entry of weekEntries) {
+        if (entry.status === 'excluded') continue;
+        const k = dayKey(entry.date);
+        (byDay[k] = byDay[k] || []).push(entry);
+      }
+      const coverageByDay: Record<string, Record<number, TempoCoverage>> = {};
+      for (const [k, de] of Object.entries(byDay)) {
+        coverageByDay[k] = getTempoCoverageForEntries(de, tempoByDay[k] || [], calendarMappings);
+      }
+      const coverageMap: Record<number, TempoCoverage> = {};
+      for (const entry of weekEntries) {
+        if (entry.status === 'excluded') continue;
+        coverageMap[entry.id] = coverageByDay[dayKey(entry.date)]?.[entry.id] || 'none';
+      }
+      setEntries(weekEntries);
+      setCoverage(coverageMap);
+    } catch { setEntries([]); setCoverage({}); }
     finally { setLoading(false); }
-  }, []);
+  }, [weekOffset]);
 
   useEffect(() => { fetchEntries(); }, [fetchEntries]);
 
-  const totalCaptured = toH(entries.reduce((s, e) => s + mins(e), 0));
-  const pushedH = toH(entries.filter((e) => e.status === 'pushed').reduce((s, e) => s + mins(e), 0));
-  const reviewH = toH(entries.filter((e) => e.status === 'pending').reduce((s, e) => s + mins(e), 0));
-  const pushedIssues = new Set(entries.filter((e) => e.status === 'pushed' && e.jira_issue).map((e) => e.jira_issue)).size;
+  const coverageOf = (e: ApiEntry): TempoCoverage => (e.status === 'pushed' ? 'full' : coverage[e.id] || 'none');
+  const hasAssignable = (e: ApiEntry): boolean =>
+    Boolean(e.jira_issue || getMappedJiraIssue(e, mappings));
+  const isPushed = (e: ApiEntry): boolean =>
+    e.status !== 'excluded' && (e.status === 'pushed' || (e.status === 'pending' && coverageOf(e) !== 'none'));
+
+  const totalCaptured = toH(entries.filter((e) => e.status !== 'excluded').reduce((s, e) => s + mins(e), 0));
+  const pushedH = toH(entries.filter((e) => isPushed(e)).reduce((s, e) => s + mins(e), 0));
+  const reviewH = toH(entries.filter((e) => e.status !== 'excluded' && e.status === 'pending' && coverageOf(e) === 'none' && !hasAssignable(e)).reduce((s, e) => s + mins(e), 0));
+  const pushedIssues = new Set(entries.filter((e) => isPushed(e) && (e.jira_issue || getMappedJiraIssue(e, mappings)?.jiraIssue)).map((e) => e.jira_issue || getMappedJiraIssue(e, mappings)?.jiraIssue)).size;
 
   // Hours by issue
   const issueMap = new Map<string, { name: string; mins: number; status: 'pushed' | 'hascode' | 'need' | 'block' }>();
   entries.forEach((e) => {
-    if (!e.jira_issue) return;
-    const cur = issueMap.get(e.jira_issue) || { name: e.jira_name || e.jira_issue, mins: 0, status: 'need' as const };
+    if (e.status === 'excluded') return;
+    const key = e.jira_issue || getMappedJiraIssue(e, mappings)?.jiraIssue || '';
+    if (!key) return;
+    const cur = issueMap.get(key) || { name: e.jira_name || key, mins: 0, status: 'need' as const };
     cur.mins += mins(e);
-    if (e.status === 'pushed') cur.status = 'pushed';
-    else if (e.jira_issue && cur.status !== 'pushed') cur.status = e.status === 'excluded' ? 'block' : 'hascode';
-    issueMap.set(e.jira_issue, cur);
+    if (isPushed(e)) cur.status = 'pushed';
+    else if (cur.status !== 'pushed') cur.status = 'hascode';
+    issueMap.set(key, cur);
   });
   const issues: IssueRow[] = Array.from(issueMap.entries())
     .map(([key, v]) => ({ key, name: v.name, hours: toH(v.mins), status: v.status }))
@@ -85,14 +149,18 @@ export default function MetricsPage() {
   return (
     <div className="metrics-page">
       <h2 style={{ fontSize: 28, fontWeight: 700, color: 'var(--navy)', marginBottom: 4 }}>Metrics</h2>
-      <p style={{ color: 'var(--slate-500)', fontSize: 14.5, marginBottom: 0 }}>Where your time went this week.</p>
+      <p style={{ color: 'var(--slate-500)', fontSize: 14.5, marginBottom: 10 }}>Where your time went.</p>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button className={'btn btn-sm ' + (weekOffset === 0 ? 'btn-navy' : 'btn-secondary')} onClick={() => setWeekOffset(0)}>This week</button>
+        <button className={'btn btn-sm ' + (weekOffset === -1 ? 'btn-navy' : 'btn-secondary')} onClick={() => setWeekOffset(-1)}>Last week</button>
+      </div>
 
       {/* Summary boxes */}
       <div className="metrics-summary">
         <div className="card" style={{ padding: 24, background: 'var(--slate-100)' }}>
           <div style={{ color: 'var(--navy)', fontSize: 14, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Total captured</div>
           <div style={{ fontSize: 34, fontWeight: 700, color: 'var(--navy)', margin: '8px 0' }}>{totalCaptured}h</div>
-          <div style={{ color: 'var(--slate-400)', fontSize: 14 }}>{entries.length} {entries.length === 1 ? 'entry' : 'entries'}</div>
+          <div style={{ color: 'var(--slate-400)', fontSize: 14 }}>{entries.filter((e) => e.status !== 'excluded').length} {entries.filter((e) => e.status !== 'excluded').length === 1 ? 'entry' : 'entries'}</div>
         </div>
         <div className="card" style={{ padding: 24, background: 'var(--success-50)' }}>
           <div style={{ color: 'var(--navy)', fontSize: 14, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.03em' }}>Pushed to Jira</div>

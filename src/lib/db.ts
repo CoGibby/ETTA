@@ -1,16 +1,8 @@
-﻿import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import Database from 'better-sqlite3';
+import { resolveDataPath } from './app-paths';
 import type { CalendarJiraMapping } from './tempo-match';
 
-const DB_PATH = process.env.DB_PATH || './data/keywords.db';
-const dbPath = path.resolve(DB_PATH);
-
-// Ensure data directory exists
-const dbDir = path.dirname(dbPath);
-if (!fs.existsSync(dbDir)) {
-  fs.mkdirSync(dbDir, { recursive: true });
-}
+const dbPath = resolveDataPath(process.env.DB_PATH, 'keywords.db');
 
 const db = new Database(dbPath);
 
@@ -93,6 +85,19 @@ try {
   // Index might already exist
 }
 
+// Migration: Add conversation_id column for grouping Outlook email threads
+try {
+  db.exec(`ALTER TABLE sources ADD COLUMN conversation_id TEXT`);
+} catch {
+  // Column already exists
+}
+
+try {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sources_conversation ON sources(conversation_id) WHERE conversation_id IS NOT NULL AND conversation_id != ''`);
+} catch {
+  // Index might already exist
+}
+
 // Migration: Add external_id column to sources table for stable meeting identification
 // GlobalAppointmentID from Outlook survives time/subject changes
 try {
@@ -157,11 +162,11 @@ export function getSources(type?: string) {
   return db.prepare('SELECT * FROM sources ORDER BY date DESC').all();
 }
 
-export function insertSource(type: string, subject: string, body: string, date: string, durationMinutes?: number, externalId?: string) {
-  return db.prepare('INSERT INTO sources (type, subject, body, date, duration_minutes, external_id) VALUES (?, ?, ?, ?, ?, ?)').run(type, subject, body, date, durationMinutes ?? null, externalId ?? null);
+export function insertSource(type: string, subject: string, body: string, date: string, durationMinutes?: number, externalId?: string, conversationId?: string) {
+  return db.prepare('INSERT INTO sources (type, subject, body, date, duration_minutes, external_id, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(type, subject, body, date, durationMinutes ?? null, externalId ?? null, conversationId ?? null);
 }
 
-export function insertSourceIfNew(type: string, subject: string, body: string, date: string, durationMinutes?: number, externalId?: string): { inserted: boolean; id?: number; updated?: boolean } {
+export function insertSourceIfNew(type: string, subject: string, body: string, date: string, durationMinutes?: number, externalId?: string, conversationId?: string): { inserted: boolean; id?: number; updated?: boolean } {
   // If external_id is provided (meetings), use it for duplicate detection
   // This survives time/subject changes in Outlook
   if (externalId) {
@@ -177,22 +182,22 @@ export function insertSourceIfNew(type: string, subject: string, body: string, d
       // Update existing source with new data (time may have changed)
       db.prepare(`
         UPDATE sources
-        SET subject = ?, body = ?, date = ?, duration_minutes = ?, imported_at = datetime('now'), status = 'active'
+        SET subject = ?, body = ?, date = ?, duration_minutes = ?, conversation_id = COALESCE(?, conversation_id), imported_at = datetime('now'), status = 'active'
         WHERE id = ?
-      `).run(subject, body, date, durationMinutes ?? null, existingByExternalId.id);
+      `).run(subject, body, date, durationMinutes ?? null, conversationId ?? null, existingByExternalId.id);
       return { inserted: false, updated: true, id: existingByExternalId.id };
     }
   }
 
   // Fall back to old behavior: try insert, handle duplicate by (type, subject, date)
   try {
-    const result = db.prepare('INSERT INTO sources (type, subject, body, date, duration_minutes, external_id) VALUES (?, ?, ?, ?, ?, ?)').run(type, subject, body, date, durationMinutes ?? null, externalId ?? null);
+    const result = db.prepare('INSERT INTO sources (type, subject, body, date, duration_minutes, external_id, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)').run(type, subject, body, date, durationMinutes ?? null, externalId ?? null, conversationId ?? null);
     return { inserted: true, id: result.lastInsertRowid as number };
   } catch {
     // Duplicate detected (unique constraint violation) - update imported_at and return existing id
     const existing = db.prepare('SELECT id FROM sources WHERE type = ? AND subject = ? AND date = ?').get(type, subject, date) as { id: number } | undefined;
     if (existing) {
-      db.prepare("UPDATE sources SET imported_at = datetime('now'), status = 'active' WHERE id = ?").run(existing.id);
+      db.prepare("UPDATE sources SET conversation_id = COALESCE(?, conversation_id), imported_at = datetime('now'), status = 'active' WHERE id = ?").run(conversationId ?? null, existing.id);
     }
     return { inserted: false, id: existing?.id };
   }
@@ -668,6 +673,8 @@ export type SourceStatus = 'active' | 'stale' | null;
 
 export interface EntryWithSourceStatus extends Entry {
   source_status: SourceStatus;
+  conversation_id: string | null;
+  external_id: string | null;
 }
 
 export function getEntries(options: {
@@ -678,7 +685,7 @@ export function getEntries(options: {
   hasJiraIssue?: boolean;
 } = {}): EntryWithSourceStatus[] {
   let query = `
-    SELECT e.*, s.status as source_status
+    SELECT e.*, s.status as source_status, s.conversation_id as conversation_id, s.external_id as external_id
     FROM entries e
     LEFT JOIN sources s ON e.source_id = s.id
     WHERE 1=1
@@ -803,6 +810,7 @@ export function deleteEntry(id: number): { changes: number } {
 }
 
 export function bulkUpdateEntries(ids: number[], updates: Partial<{
+  duration_minutes: number;
   jira_issue: string | null;
   jira_name: string | null;
   jira_source: JiraSource;
@@ -819,6 +827,7 @@ export function bulkUpdateEntries(ids: number[], updates: Partial<{
   const fields: string[] = [];
   const values: (string | number | null)[] = [];
 
+  if (updates.duration_minutes !== undefined) { fields.push('duration_minutes = ?'); values.push(updates.duration_minutes); }
   if (updates.jira_issue !== undefined) { fields.push('jira_issue = ?'); values.push(updates.jira_issue); }
   if (updates.jira_name !== undefined) { fields.push('jira_name = ?'); values.push(updates.jira_name); }
   if (updates.jira_source !== undefined) { fields.push('jira_source = ?'); values.push(updates.jira_source); }
@@ -1226,6 +1235,19 @@ if (removePlaceholderAssignmentsFlag !== '1') {
   setSetting('schema_remove_placeholder_assignments', '1');
 }
 
+// Migration: Correct entries that stored context time inside duration_minutes.
+// Previously duration_minutes = meeting duration + context_minutes; now it is exact.
+const fixContextDurationsFlag = getSetting('schema_fix_context_durations');
+if (fixContextDurationsFlag !== '1') {
+  db.prepare(`
+    UPDATE entries
+    SET duration_minutes = MAX(1, duration_minutes - context_minutes),
+        context_minutes = 0
+    WHERE context_minutes > 0
+  `).run();
+  setSetting('schema_fix_context_durations', '1');
+}
+
 export function getAllSettings(): Record<string, string> {
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   const settings: Record<string, string> = {};
@@ -1333,6 +1355,104 @@ export function upsertCalendarJiraMapping(input: {
 
 export function deleteCalendarJiraMapping(id: number, userKey = getJiraMappingUserKey()): { changes: number } {
   const result = db.prepare('DELETE FROM calendar_jira_mappings WHERE id = ? AND user_key = ?').run(id, userKey);
+  return { changes: result.changes };
+}
+
+// ============================================================================
+// CALENDAR EXCLUSION RULES - Learned non-work activity
+// ============================================================================
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS calendar_exclusion_rules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    normalized_title TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'all' CHECK(source_type IN ('meeting', 'email', 'manual', 'all')),
+    external_id TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_key, normalized_title, source_type)
+  );
+  CREATE INDEX IF NOT EXISTS idx_calendar_exclusion_rules_user ON calendar_exclusion_rules(user_key);
+`);
+
+export interface CalendarExclusionRule {
+  id: number;
+  title: string;
+  sourceType: 'meeting' | 'email' | 'manual' | 'all';
+  externalId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function getCalendarExclusionRules(userKey = getJiraMappingUserKey()): CalendarExclusionRule[] {
+  return db.prepare(`
+    SELECT id, title, source_type as sourceType, external_id as externalId,
+           created_at as createdAt, updated_at as updatedAt
+    FROM calendar_exclusion_rules
+    WHERE user_key = ?
+    ORDER BY updated_at DESC, title ASC
+  `).all(userKey) as CalendarExclusionRule[];
+}
+
+export function findCalendarExclusionRule(input: {
+  title: string;
+  sourceType: 'meeting' | 'email' | 'manual';
+  externalId?: string | null;
+  userKey?: string;
+}): CalendarExclusionRule | null {
+  const userKey = input.userKey || getJiraMappingUserKey();
+  const normalizedTitle = normalizeMappingTitle(input.title);
+  if (!normalizedTitle) return null;
+
+  if (input.externalId) {
+    const byExternalId = db.prepare(`
+      SELECT id, title, source_type as sourceType, external_id as externalId,
+             created_at as createdAt, updated_at as updatedAt
+      FROM calendar_exclusion_rules
+      WHERE user_key = ? AND external_id = ?
+    `).get(userKey, input.externalId) as CalendarExclusionRule | undefined;
+    if (byExternalId) return byExternalId;
+  }
+
+  return db.prepare(`
+    SELECT id, title, source_type as sourceType, external_id as externalId,
+           created_at as createdAt, updated_at as updatedAt
+    FROM calendar_exclusion_rules
+    WHERE user_key = ? AND normalized_title = ?
+      AND (source_type = ? OR source_type = 'all')
+    ORDER BY CASE source_type WHEN ? THEN 0 ELSE 1 END, updated_at DESC
+    LIMIT 1
+  `).get(userKey, normalizedTitle, input.sourceType, input.sourceType) as CalendarExclusionRule | null;
+}
+
+export function upsertCalendarExclusionRule(input: {
+  title: string;
+  sourceType: 'meeting' | 'email' | 'manual';
+  externalId?: string | null;
+  userKey?: string;
+}): CalendarExclusionRule {
+  const userKey = input.userKey || getJiraMappingUserKey();
+  const title = input.title.trim();
+  const normalizedTitle = normalizeMappingTitle(title);
+  if (!title || !normalizedTitle) throw new Error('A title is required.');
+
+  db.prepare(`
+    INSERT INTO calendar_exclusion_rules
+      (user_key, title, normalized_title, source_type, external_id)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(user_key, normalized_title, source_type) DO UPDATE SET
+      title = excluded.title,
+      external_id = COALESCE(excluded.external_id, calendar_exclusion_rules.external_id),
+      updated_at = datetime('now')
+  `).run(userKey, title, normalizedTitle, input.sourceType, input.externalId ?? null);
+
+  return findCalendarExclusionRule({ title, sourceType: input.sourceType, externalId: input.externalId, userKey }) as CalendarExclusionRule;
+}
+
+export function deleteCalendarExclusionRule(id: number, userKey = getJiraMappingUserKey()): { changes: number } {
+  const result = db.prepare('DELETE FROM calendar_exclusion_rules WHERE id = ? AND user_key = ?').run(id, userKey);
   return { changes: result.changes };
 }
 
@@ -1935,6 +2055,7 @@ export interface Source {
   imported_at: string;
   status: 'active' | 'stale';
   external_id: string | null;
+  conversation_id: string | null;
 }
 
 export function getSourcesForGeneration(options: {

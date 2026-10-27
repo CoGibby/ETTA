@@ -1,6 +1,6 @@
-﻿'use client';
+'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 
 export interface AllocRow {
   key: string;
@@ -57,6 +57,7 @@ interface Props {
   totalHours: number;
   meetingsHours: number;
   tempoHours?: number;
+  historySuggestions?: { key: string; name: string; score: number }[];
   setTotalHours: (n: number) => void;
   unassigned: { id: number; key: string; name: string }[];
   onAddToActive: (key: string, name: string) => void;
@@ -70,11 +71,13 @@ interface Props {
 
 export function AllocationCard({
   rows, setRows, totalHours, meetingsHours, tempoHours, setTotalHours,
+  historySuggestions,
   unassigned, onAddToActive, onRemoveFromActive, onDeleteUnassigned, onAddProject,
   selectedDateKey, estimates,
   onPushed,
 }: Props) {
   const workTime = Math.max(0, totalHours - meetingsHours - (tempoHours || 0));
+  const suggestions = useMemo(() => historySuggestions || [], [historySuggestions]);
   const anyLocked = rows.some((r) => r.locked);
   const dragRef = useRef<{ targetKey: string; trackEl: HTMLElement } | null>(null);
   const [pushing, setPushing] = useState(false);
@@ -84,10 +87,80 @@ export function AllocationCard({
   const [commentKey, setCommentKey] = useState<string | null>(null);
   const [openWarnings, setOpenWarnings] = useState<Set<string>>(new Set());
   const [openClosed, setOpenClosed] = useState<Set<string>>(new Set());
+  const warningKey = useCallback((key: string) => selectedDateKey ? selectedDateKey + ':' + key : key, [selectedDateKey]);
+
+  useEffect(() => {
+    setOpenWarnings(new Set());
+    setOpenClosed(new Set());
+  }, [selectedDateKey]);
 
   const setComment = useCallback((key: string, text: string) => {
     setRows((prev) => prev.map((r) => r.key === key ? { ...r, comment: text } : r));
   }, [setRows]);
+
+  // Propose a day split from recent Jira activity: locked rows keep their exact
+  // share, the rest is distributed across active rows and recent issues in
+  // 15-minute increments (the jira-worklogs skill's rounding convention).
+  const applyFill = useCallback(() => {
+    const totalMinutes = Math.round(workTime * 60);
+    const usable = Math.floor(totalMinutes / 15) * 15;
+    if (usable <= 0) return;
+
+    const lockedRows = rows.filter((r) => r.locked && r.key.trim());
+    const lockedMinutes = lockedRows.reduce((s, r) => s + (r.pct / 100) * totalMinutes, 0);
+    const remaining = Math.max(0, usable - Math.round(lockedMinutes));
+    if (remaining < 15) return;
+
+    const scoreByKey = new Map(suggestions.map((c) => [c.key.toUpperCase(), c.score]));
+    const seen = new Set<string>();
+    const existingUnlocked = rows.filter((r) => !r.locked && r.key.trim());
+    existingUnlocked.forEach((r) => seen.add(r.key.toUpperCase()));
+
+    type FillCandidate = { key: string; name: string; score: number; comment?: string };
+    const candidates: FillCandidate[] = existingUnlocked.map((r) => ({
+      key: r.key,
+      name: r.name,
+      score: scoreByKey.get(r.key.toUpperCase()) ?? 1,
+      comment: r.comment,
+    }));
+    for (const suggestion of suggestions) {
+      if (candidates.length >= 6) break;
+      if (seen.has(suggestion.key.toUpperCase())) continue;
+      seen.add(suggestion.key.toUpperCase());
+      candidates.push({ key: suggestion.key, name: suggestion.name, score: suggestion.score });
+    }
+    if (candidates.length === 0) return;
+
+    const sumScore = candidates.reduce((s, c) => s + c.score, 0);
+    if (sumScore <= 0) return;
+    const bases = candidates.map((c) => Math.floor((remaining * (c.score / sumScore)) / 15) * 15);
+    const remainders = candidates.map((c, i) => remaining * (c.score / sumScore) - bases[i]);
+    let leftover = remaining - bases.reduce((s, b) => s + b, 0);
+    const order = candidates
+      .map((_, i) => i)
+      .sort((a, b) => remainders[b] - remainders[a] || candidates[b].score - candidates[a].score);
+    let orderIndex = 0;
+    while (leftover >= 15) {
+      bases[order[orderIndex % order.length]] += 15;
+      leftover -= 15;
+      orderIndex += 1;
+    }
+
+    const filled = candidates
+      .map((c, i) => ({ candidate: c, minutes: bases[i] }))
+      .filter((item) => item.minutes > 0)
+      .sort((a, b) => b.minutes - a.minutes)
+      .map((item) => ({
+        key: item.candidate.key,
+        name: item.candidate.name,
+        pct: Math.round((item.minutes / totalMinutes) * 100 * 1000) / 1000,
+        locked: false,
+        comment: item.candidate.comment,
+      }));
+    if (filled.length === 0) return;
+
+    setRows(() => [...lockedRows, ...filled]);
+  }, [rows, workTime, suggestions, setRows]);
 
   const pushToJira = () => {
     if (rows.length === 0 || workTime <= 0) return;
@@ -119,15 +192,36 @@ export function AllocationCard({
         body: JSON.stringify({ entryIds: [], worklogs }),
       });
       const data = await res.json();
+
+      // Tempo reconciliation (splits against time already logged in Tempo):
+      const skippedCount = Array.isArray(data.skippedEntries) ? data.skippedEntries.length : (data.skipped || 0);
+      const partialCount = Array.isArray(data.partial) ? data.partial.length : 0;
+
       if (data.success) {
-        setPushMsg({ ok: true, text: `Pushed ${data.pushed} entr${data.pushed === 1 ? 'y' : 'ies'} to Jira.` });
+        let text = `Pushed ${data.pushed} entr${data.pushed === 1 ? 'y' : 'ies'} to Jira.`;
+        if (partialCount > 0 && data.pushed === 0) {
+          text = `Pushed the remaining time not already allocated in Tempo.`;
+        } else if (skippedCount > 0) {
+          text += ` ${skippedCount} ${skippedCount === 1 ? 'entry' : 'entries'} already allocated in Tempo.`;
+        }
+        setPushMsg({ ok: true, text });
         await onPushed?.();
       } else {
         const invalidIssues = Object.entries(data.invalidIssues || {}) as [string, string][];
         const issueDetail = invalidIssues.length > 0
           ? ' ' + invalidIssues.map(([key, reason]) => `${key}: ${reason}`).join(' ')
           : '';
-        setPushMsg({ ok: false, text: (data.error || 'Push failed.') + issueDetail });
+
+        // "All time already allocated" is the expected no-op outcome when the user
+        // has already logged this time manually in Jira/Tempo.
+        const allAllocated = Array.isArray(data.skippedEntries) && data.skippedEntries.length > 0
+          && (data.error || '').toLowerCase().includes('already allocated');
+        if (allAllocated) {
+          setPushMsg({ ok: false, text: 'All time already allocated — nothing to push.' });
+          await onPushed?.();
+        } else {
+          setPushMsg({ ok: false, text: (data.error || 'Push failed.') + issueDetail });
+        }
       }
     } catch {
       setPushMsg({ ok: false, text: 'Network error.' });
@@ -292,21 +386,27 @@ export function AllocationCard({
   return (
     <div className="alloc-hero">
       <div className="top-row">
+        <div className="alloc-summary">
+          {workTime < 0.01 && (tempoHours || 0) > 0 ? (
+            <span className="value">All time already logged in Jira</span>
+          ) : (
+            <>
+              <span className="value">{fmtHrsMin(workTime)}</span>
+              <span className="label">to allocate</span>
+            </>
+          )}
+          {(tempoHours || 0) > 0 && <span className="detail">{fmtHrsMin(tempoHours || 0)} in Tempo</span>}
+          {meetingsHours > 0 && <span className="detail">{fmtHrsMin(meetingsHours)} meetings to review</span>}
+        </div>
         <div className="total-input">
           <span className="text-muted">Total</span>
           <input className="input" type="number" min={0} max={12} value={totalHours}
             onChange={(e) => { const val = parseFloat(e.target.value) || 0; setTotalHours(Math.min(val, 12)); }} />
           <span className="text-muted">hours</span>
-
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 12px', marginBottom: 14 }}>
-        <span className="text-muted">
-          <b style={{ color: 'var(--navy)' }}>{fmtHrsMin(workTime)}</b> to allocate
-          {(tempoHours || 0) > 0 && <>{' \u00b7 '}{fmtHrsMin(tempoHours || 0)} in Tempo</>}
-          {meetingsHours > 0 && <>{' \u00b7 '}{fmtHrsMin(meetingsHours)} meetings to review</>}
-        </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', padding: '0 0 10px', gap: 10 }}>
         {rows.length > 0 && workTime > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {pushMsg && <span style={{ fontSize: 12, color: pushMsg.ok ? 'var(--success-600)' : 'var(--danger-600)', fontWeight: 600 }}>{pushMsg.text}</span>}
@@ -317,6 +417,19 @@ export function AllocationCard({
           </div>
         )}
       </div>
+
+      {workTime > 0 && suggestions.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0 0 10px', flexWrap: 'wrap' }}>
+          <span className="text-muted" style={{ fontSize: 13, minWidth: 0 }}>
+            {rows.length === 0
+              ? 'Not sure how to split your time? Start from your recent Jira activity.'
+              : 'Rebalance this split to match your recent Jira activity.'}
+          </span>
+          <button className="btn btn-secondary btn-sm" style={{ textTransform: 'none', letterSpacing: 0, flexShrink: 0 }} onClick={applyFill}>
+            {rows.length === 0 ? `Fill to ${fmtHrsMin(workTime)}` : 'Re-suggest split'}
+          </button>
+        </div>
+      )}
 
       <div className="alloc-section-label" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         Split your time
@@ -333,11 +446,12 @@ export function AllocationCard({
           const estData = estimates && upperKey in estimates ? estimates[upperKey] : undefined;
           const estHours = estData ? estData.remaining / 3600 : undefined;
           // Only warn if an original estimate was actually set AND we're over it
-          const overEstimate = estData?.hasEstimate === true && estHours !== undefined && hrs > estHours;
+          const overEstimate = estData?.hasEstimate === true && estHours !== undefined && (estHours <= 0 ? hrs > 0 : hrs >= estHours);
           const overBy = estHours !== undefined ? Math.max(0, hrs - estHours) : 0;
           const isClosed = estData ? !estData.isOpen : false;
           const isMeeting = /meeting/i.test(row.name);
-          const showMeetingPrompt = isMeeting && !row.comment;
+          const isGeneral = /^SVCOPS-/i.test(row.key);
+          const showMeetingPrompt = (isMeeting || isGeneral) && !row.comment;
           const showCommentBox = commentKey === row.key;
           return (
             <div key={row.key} className={'alloc-row' + (row.locked ? ' locked' : '')}>
@@ -356,7 +470,7 @@ export function AllocationCard({
                   <span className="row-name">{row.name}</span>
                   {overEstimate && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setOpenWarnings(prev => { const next = new Set(prev); if (next.has(row.key)) { next.delete(row.key); } else { next.add(row.key); } return next; }); }}
+                      onClick={(e) => { e.stopPropagation(); const key = warningKey(row.key); setOpenWarnings(prev => { const next = new Set(prev); if (next.has(key)) { next.delete(key); } else { next.add(key); } return next; }); }}
                       title="Click to see details"
                       className="warn-badge"
                     >!</button>
@@ -388,10 +502,10 @@ export function AllocationCard({
                     onClick={() => removeRow(row.key)} title="Remove">x</button>
                 </div>
               </div>
-              {overEstimate && openWarnings.has(row.key) && (
+              {overEstimate && openWarnings.has(warningKey(row.key)) && (
                 <div style={{ padding: '4px 12px 6px', fontSize: 13, color: 'var(--navy)', fontWeight: 600 }}>
                   {'You are exceeding the remaining estimated time. Consider adding a comment to explain.'}
-                  <button onClick={() => { setOpenWarnings(prev => { const next = new Set(prev); next.delete(row.key); return next; }); setCommentKey(row.key); }}
+                    <button onClick={() => { const key = warningKey(row.key); setOpenWarnings(prev => { const next = new Set(prev); next.delete(key); return next; }); setCommentKey(row.key); }}
                     style={{ background: 'none', border: 'none', color: 'var(--navy)', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0, marginLeft: 4, textDecoration: 'underline' }}>
                     Add comment
                   </button>
@@ -406,7 +520,7 @@ export function AllocationCard({
                 <div style={{ padding: '2px 12px 6px' }}>
                   <button onClick={() => setCommentKey(row.key)}
                     style={{ background: 'none', border: 'none', color: 'var(--navy)', cursor: 'pointer', fontSize: 13, fontWeight: 600, padding: 0, textDecoration: 'underline' }}>
-                    Consider adding meeting notes
+                    {isMeeting ? 'Consider adding meeting notes' : 'Consider adding detail about this general work'}
                   </button>
                 </div>
               )}
@@ -450,7 +564,7 @@ export function AllocationCard({
             </div>
           );
         })}
-        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>+ Add project</button>
+        <button className="btn btn-secondary btn-sm" onClick={onAddProject}>Find Jira issue</button>
       </div>
 
       {showConfirm && (

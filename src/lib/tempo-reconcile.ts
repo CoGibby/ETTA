@@ -59,7 +59,7 @@ export function reconcilePushedEntries(
       continue;
     }
 
-    const entryMinutes = entry.duration_minutes + (entry.context_minutes || 0);
+    const entryMinutes = entry.duration_minutes;
     const entryTitle = normalizeText(entry.title);
     const fallbackIndex = tempoWorklogs.findIndex((worklog, index) => {
       if (usedFallbackWorklogs.has(index)) return false;

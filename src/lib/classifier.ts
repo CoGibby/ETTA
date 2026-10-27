@@ -1,4 +1,4 @@
-﻿import { getProjectKeywordMap, getTaskTypeKeywordMap, getUnifiedRouteMap, getSetting, JiraSource, ProjectSource, TaskTypeSource } from './db';
+import { getProjectKeywordMap, getTaskTypeKeywordMap, getUnifiedRouteMap, getSetting, JiraSource, ProjectSource, TaskTypeSource } from './db';
 
 export interface ClassificationResult {
   project: string | null;
@@ -216,9 +216,9 @@ export function calculateEmailDuration(body: string): number {
 
   const shortThreshold = shortThresholdSetting ? parseInt(shortThresholdSetting, 10) : 600;
   const mediumThreshold = mediumThresholdSetting ? parseInt(mediumThresholdSetting, 10) : 1200;
-  const shortMinutes = shortMinutesSetting ? parseInt(shortMinutesSetting, 10) : 10;
-  const mediumMinutes = mediumMinutesSetting ? parseInt(mediumMinutesSetting, 10) : 20;
-  const longMinutes = longMinutesSetting ? parseInt(longMinutesSetting, 10) : 30;
+  const shortMinutes = shortMinutesSetting ? parseInt(shortMinutesSetting, 10) : 5;
+  const mediumMinutes = mediumMinutesSetting ? parseInt(mediumMinutesSetting, 10) : 10;
+  const longMinutes = longMinutesSetting ? parseInt(longMinutesSetting, 10) : 15;
 
   if (charCount < shortThreshold) {
     return shortMinutes;

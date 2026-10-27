@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { ReactNode, useState, useCallback, useEffect } from 'react';
 import Link from 'next/link';
@@ -166,7 +166,7 @@ function BottomStatus() {
 
 function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<void>; setConnecting: (v: boolean) => void }) {
   const router = useRouter();
-  const { outlookConnected, refreshOutlook } = useConnection();
+  const { connected, outlookConnected, checking, refreshOutlook } = useConnection();
   const [pat, setPat] = useState('');
   const [showPat, setShowPat] = useState(false);
   const [outlookSkipped, setOutlookSkipped] = useState(false);
@@ -222,6 +222,36 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
     }
   }, [serverUrl, pat, router, onSuccess, setConnecting]);
 
+  useEffect(() => {
+    if (outlookConnected && connected) {
+      router.push('/');
+    }
+  }, [outlookConnected, connected, router]);
+  const connectOutlookWithPat = async () => {
+    if (pat.trim()) {
+      try {
+        const testRes = await fetch('/api/jira/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: serverUrl, pat }),
+        });
+        const testData = await testRes.json();
+        if (testData.success) {
+          await fetch('/api/settings', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jira_url: serverUrl, jira_pat: pat }),
+          });
+          // PAT saved silently - user can see it in the input
+        } else {
+          setMsg({ ok: false, text: testData.error || 'Jira token invalid - you can still connect Outlook.' });
+        }
+      } catch {
+        setMsg({ ok: false, text: 'Could not save Jira token - you can still connect Outlook.' });
+      }
+    }
+    window.open('/api/outlook/auth/start', '_blank');
+  };
   const serverHost = serverUrl.replace(/^https?:\/\//, '');
 
   return (
@@ -281,7 +311,7 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
             </div>
 
             <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--slate-200)' }}>
-              {outlookConnected || outlookSkipped ? (
+              {outlookConnected || outlookSkipped || checking ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                   {outlookConnected ? (
                     <>
@@ -302,7 +332,7 @@ function GetStarted({ onSuccess, setConnecting }: { onSuccess: () => Promise<voi
                 <button
                   type="button"
                   className="btn btn-secondary"
-                  onClick={() => { window.location.href = '/api/outlook/auth/start'; }}
+                  onClick={connectOutlookWithPat}
                 >
                   Connect Outlook
                 </button>

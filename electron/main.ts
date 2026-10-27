@@ -3,11 +3,34 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { app, BrowserWindow, shell } from "electron";
+import { autoUpdater } from "electron-updater";
 
 const isDevelopment = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
 let serverProcess: ChildProcess | null = null;
 let applicationOrigin: string | null = null;
+let dataDirectory: string | null = null;
+
+const ENTRA_DEFAULTS: Record<string, string> = {
+  AZURE_CLIENT_ID: "b13c664e-d672-412b-bb7a-4eb9e53e059c",
+  AZURE_TENANT_ID: "8a198873-4fec-4e76-8182-ca479edbbd60",
+  AZURE_SCOPES: "Mail.Read Calendars.Read User.Read offline_access",
+  OUTLOOK_BACKEND: "graph",
+};
+
+for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
+  if (!process.env[key]) {
+    process.env[key] = value;
+  }
+}
+
+// In-place updates via electron-updater. Poll only when packaged (not in dev).
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = true;
+autoUpdater.on("error", (error) => appendServerLog(`\nUpdate error: ${String(error)}\n`));
+autoUpdater.on("update-downloaded", () => {
+  mainWindow?.webContents.send("update-downloaded");
+});
 
 function reservePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -52,7 +75,7 @@ async function startPackagedServer(): Promise<string> {
   const port = await reservePort();
   const nextDirectory = path.join(process.resourcesPath, "next");
   const serverPath = path.join(nextDirectory, "server.js");
-  const dataDirectory = path.join(app.getPath("userData"), "data");
+  dataDirectory = path.join(app.getPath("userData"), "data");
   const scriptsDirectory = path.join(process.resourcesPath, "outlook-scripts");
 
   fs.mkdirSync(dataDirectory, { recursive: true });
@@ -69,6 +92,8 @@ async function startPackagedServer(): Promise<string> {
       HOSTNAME: "127.0.0.1",
       PORT: String(port),
       ETTA_DATA_DIR: dataDirectory,
+      TIMEKEEPER_DATA_DIR: dataDirectory,
+      ELECTRON_USER_DATA: dataDirectory,
       DB_PATH: path.join(dataDirectory, "timekeeper.db"),
       MSAL_CACHE_PATH: path.join(dataDirectory, "msal-cache.json"),
       MSAL_FLOW_PATH: path.join(dataDirectory, "outlook-device-flow.json"),
@@ -107,12 +132,19 @@ function createWindow(origin: string): void {
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isOutlookAuthStartUrl(url)) {
+      void shell.openExternal(url).catch((error) => {
+        appendServerLog(`\nOpening Outlook sign-in in the default browser failed: ${String(error)}\n`);
+      });
+      return { action: "deny" };
+    }
+    if (applicationOrigin && url.startsWith(applicationOrigin)) return { action: "allow" };
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!applicationOrigin || !url.startsWith(applicationOrigin)) event.preventDefault();
+    if (!isAllowedNavigation(url)) event.preventDefault();
   });
 
   void mainWindow.loadURL(origin);
@@ -124,6 +156,28 @@ function createWindow(origin: string): void {
 function stopServer(): void {
   if (serverProcess && !serverProcess.killed) serverProcess.kill();
   serverProcess = null;
+}
+
+function isOutlookSignInInProgress(): boolean {
+  if (!dataDirectory) return false;
+  return fs.existsSync(path.join(dataDirectory, "outlook_pkce.json"));
+}
+
+function isOutlookAuthStartUrl(rawUrl: string): boolean {
+  if (!applicationOrigin) return false;
+  try {
+    const url = new URL(rawUrl);
+    return url.origin === new URL(applicationOrigin).origin && url.pathname === "/api/outlook/auth/start";
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedNavigation(rawUrl: string): boolean {
+  if (isDevelopment) return true;
+  if (!applicationOrigin) return false;
+  if (rawUrl.startsWith(applicationOrigin)) return true;
+  return isOutlookSignInInProgress() && rawUrl.startsWith("https://");
 }
 
 const hasInstanceLock = app.requestSingleInstanceLock();
@@ -141,6 +195,12 @@ if (!hasInstanceLock) {
       ? process.env.ELECTRON_START_URL || "http://127.0.0.1:3000"
       : await startPackagedServer();
     createWindow(origin);
+
+    if (!isDevelopment) {
+      void autoUpdater
+        .checkForUpdatesAndNotify()
+        .catch(() => { /* update check is best-effort */ });
+    }
   }).catch((error) => {
     appendServerLog(`\nDesktop startup failed: ${String(error)}\n`);
     app.quit();
