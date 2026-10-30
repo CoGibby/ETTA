@@ -3,6 +3,7 @@
   "productName": "ETTA Time Tracker",
   "publish": {
     "provider": "github",
+    "releaseType": "release",
     "owner": "CoGibby",
     "repo": "ETTA"
   },
