@@ -272,9 +272,9 @@ export default function ReviewPage() {
       const historyEnd = new Date(selectedDate);
       historyEnd.setDate(historyEnd.getDate() - 1);
       const historyStart = new Date(historyEnd);
-      historyStart.setDate(historyStart.getDate() - 13);
+      historyStart.setDate(historyStart.getDate() - 29);
       const windowStart = new Date();
-      windowStart.setDate(windowStart.getDate() - 13);
+      windowStart.setDate(windowStart.getDate() - 29);
       if (historyStart < windowStart) historyStart.setTime(windowStart.getTime());
       let recentTempoResult: { success: boolean; entries?: (TempoWorklog & { date: string })[] } = { success: false };
       try {
@@ -532,14 +532,13 @@ export default function ReviewPage() {
     refreshFavorites();
   }, [refreshFavorites]);
 
-  const syncCalendar = useCallback(async () => {
+  const syncCalendar = useCallback(async (rangeStart?: Date, rangeEnd?: Date) => {
     setSyncing(true);
     setSyncMsg('');
     try {
-      const mon = new Date();
-      mon.setDate(mon.getDate() - 13);
+      const mon = new Date(rangeStart || new Date(new Date().setDate(new Date().getDate() - 13)));
       mon.setHours(0, 0, 0, 0);
-      const sun = new Date();
+      const sun = new Date(rangeEnd || new Date());
       sun.setHours(23, 59, 59, 999);
       const res = await fetch('/api/sources/extract', {
         method: 'POST',
@@ -604,6 +603,29 @@ export default function ReviewPage() {
     }
   }, [fetchStats]);
 
+  // Backfill older weeks on demand: navigating past the 14-day auto-sync window
+  // pulls that week's calendar data once per session, per Chris's request that
+  // PREV "sync one more week at a time" (ETTA-117).
+  const backfillKeyRef = useRef<string | null>(null);
+  const selectedWeekStart = useMemo(() => mondayOfDate(selectedDate), [selectedDate]);
+  const selectedWeekNeedsSync = useMemo(() => {
+    const coveredStart = new Date();
+    coveredStart.setDate(coveredStart.getDate() - 13);
+    coveredStart.setHours(0, 0, 0, 0);
+    return selectedWeekStart.getTime() < coveredStart.getTime();
+  }, [selectedWeekStart]);
+
+  useEffect(() => {
+    if (!outlookConnected || !selectedWeekNeedsSync) return;
+    const key = toIso(selectedWeekStart);
+    if (backfillKeyRef.current === key) return;
+    backfillKeyRef.current = key;
+    const sun = new Date(selectedWeekStart);
+    sun.setDate(selectedWeekStart.getDate() + 6);
+    sun.setHours(23, 59, 59, 999);
+    void syncCalendar(selectedWeekStart, sun);
+  }, [outlookConnected, selectedWeekNeedsSync, selectedWeekStart, syncCalendar]);
+
   const dateLabel = useMemo(() => {
     return selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
   }, [selectedDate]);
@@ -639,19 +661,33 @@ export default function ReviewPage() {
 
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 10 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => Math.max(d - 1, -13))} disabled={dayOffset < -12}>Prev</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => Math.max(d - 1, -29))} disabled={dayOffset < -28}>Prev</button>
           <span aria-live="polite" aria-atomic="true" style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', padding: '4px 10px', minWidth: 170, textAlign: 'center' }}>{selectedDateLabel}</span>
           {dayOffset !== 0 && (
             <button className="btn btn-navy btn-sm" onClick={() => setDayOffset(0)}>Jump to today</button>
           )}
           <button className="btn btn-secondary btn-sm" onClick={() => setDayOffset(d => d + 1)} disabled={dayOffset >= 0}>Next</button>
+          {selectedWeekNeedsSync && (
+            <button
+              className="btn btn-navy btn-sm"
+              onClick={() => {
+                const sun = new Date(selectedWeekStart);
+                sun.setDate(selectedWeekStart.getDate() + 6);
+                sun.setHours(23, 59, 59, 999);
+                void syncCalendar(selectedWeekStart, sun);
+              }}
+              disabled={syncing}
+            >
+              {syncing ? 'Syncing...' : 'Sync this week'}
+            </button>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {syncing && <span className="text-muted">Syncing calendar...</span>}
           {syncMsg && !syncing && <span className="text-muted">{syncMsg}</span>}
           {outlookConnected && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <button className="btn btn-secondary btn-sm" onClick={syncCalendar} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>Re-sync</button>
+              <button className="btn btn-secondary btn-sm" onClick={() => void syncCalendar()} style={{ textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>Re-sync</button>
               <span className="text-muted" style={{ fontSize: 13 }}>Calendar auto-refreshes every 5 min</span>
             </div>
           )}

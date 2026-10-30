@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { app, BrowserWindow, shell } from "electron";
-import { autoUpdater } from "electron-updater";
+import type { AppUpdater } from "electron-updater";
 
 const isDevelopment = !app.isPackaged;
 let mainWindow: BrowserWindow | null = null;
@@ -24,10 +24,18 @@ for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
   }
 }
 
-// In-place updates via electron-updater. Internal prerelease builds (version
-// contains "-ppmo") never auto-update; the feed goes live at public release.
-const updaterEnabled = !isDevelopment && !app.getVersion().includes("-ppmo");
-if (updaterEnabled) {
+// In-place updates via electron-updater. Loaded lazily so a handoff build
+// without the updater packaged can never crash the app at startup. Internal
+// prerelease builds (version contains "-ppmo") never auto-update; the feed
+// goes live for insider/public versions.
+let autoUpdater: AppUpdater | null = null;
+try {
+  autoUpdater = require("electron-updater").autoUpdater;
+} catch {
+  appendServerLog("\nelectron-updater is not packaged in this build; updates disabled.\n");
+}
+const updaterEnabled = !isDevelopment && autoUpdater !== null && !app.getVersion().includes("-ppmo");
+if (updaterEnabled && autoUpdater) {
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("error", (error) => appendServerLog(`\nUpdate error: ${String(error)}\n`));
@@ -202,7 +210,7 @@ if (!hasInstanceLock) {
 
     if (updaterEnabled) {
       void autoUpdater
-        .checkForUpdatesAndNotify()
+        ?.checkForUpdatesAndNotify()
         .catch(() => { /* update check is best-effort */ });
     }
   }).catch((error) => {
