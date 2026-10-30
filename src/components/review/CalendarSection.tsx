@@ -203,6 +203,7 @@ export function CalendarSection({
   const [mappings, setMappings] = useState<CalendarJiraMapping[]>([]);
   const [expandedEntryIds, setExpandedEntryIds] = useState<Set<number>>(new Set());
   const [invalidIssueIds, setInvalidIssueIds] = useState<Set<number>>(new Set());
+  const [syncingWeek, setSyncingWeek] = useState(false);
   const today = new Date();
   const gridRef = useRef<HTMLDivElement>(null);
   const fetchRequestRef = useRef(0);
@@ -318,7 +319,75 @@ export function CalendarSection({
 
   const hasEntries = days.some((d) => d.entries.length > 0);
 
-  const shiftWeek = (d: number) => { setWeekOffset((w) => Math.min(0, Math.max(-2, w + d))); setSelIdx(0); };
+  const shiftWeek = (d: number) => { setWeekOffset((w) => Math.min(0, Math.max(-4, w + d))); setSelIdx(0); };
+
+  const syncWeek = useCallback(async () => {
+    if (syncingWeek) return;
+    setSyncingWeek(true);
+    const mon = mondayOf(weekOffset);
+    const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+    const showBanner = (message: string) => {
+      setBanner(message);
+      setTimeout(() => setBanner(null), 6000);
+    };
+    try {
+      const res = await fetch('/api/sources/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate: toIso(mon), endDate: toIso(sun) }),
+      });
+      let total: number | null = null;
+      let syncError: string | null = null;
+      if (res.ok && res.body) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let done = false;
+        while (!done) {
+          const chunk = await reader.read();
+          if (chunk.done) { done = true; break; }
+          const text = decoder.decode(chunk.value);
+          for (const line of text.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'complete') {
+                if (data.success) total = data.total;
+                else syncError = data.error || 'Sync completed with errors.';
+              } else if (data.type === 'error') {
+                syncError = data.error || 'Sync failed.';
+              }
+            } catch { /* ignore malformed lines */ }
+          }
+        }
+      } else {
+        syncError = 'Sync failed.';
+      }
+      if (syncError) { showBanner(syncError); return; }
+      try {
+        const genRes = await fetch('/api/entries/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startDate: toIso(mon), endDate: toIso(sun), overwrite: true }),
+        });
+        const genData = await genRes.json();
+        if (genData.success) {
+          showBanner(total === 0
+            ? 'No calendar activity found for this week.'
+            : `Synced ${total} items, generated ${genData.generated} entries.`);
+        } else {
+          showBanner('Entry generation failed: ' + (genData.error || 'unknown error'));
+        }
+      } catch {
+        showBanner('Entry generation failed.');
+      }
+    } catch {
+      showBanner('Network error during sync.');
+    } finally {
+      setSyncingWeek(false);
+      fetchWeek(weekOffset);
+      onDataChange?.();
+    }
+  }, [weekOffset, syncingWeek, fetchWeek, onDataChange]);
 
   const patchEntry = async (id: number, updates: Record<string, unknown>) => {
     await fetch('/api/entries', {
@@ -609,10 +678,15 @@ export function CalendarSection({
       <div id="calendar-section" className={'detail-toggle-body' + (open ? ' open' : '')}>
         <div className="calhead">
           <div className="weeknav">
-            <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(-1)} disabled={weekOffset < -1}>Prev</button>
+            <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(-1)} disabled={weekOffset <= -4}>Prev</button>
             <button className="btn btn-secondary btn-sm" onClick={() => shiftWeek(1)}>Next</button>
             <button className="btn btn-navy btn-sm" onClick={() => { setWeekOffset(0); setSelIdx(0); }}>This week</button>
             <span className="text-muted" aria-live="polite" aria-atomic="true" style={{ minWidth: 150, textAlign: 'center' }}>{weekLabel}</span>
+            {weekOffset < 0 && (
+              <button className="btn btn-navy btn-sm" onClick={syncWeek} disabled={syncingWeek}>
+                {syncingWeek ? 'Syncing...' : 'Sync this week'}
+              </button>
+            )}
           </div>
         </div>
 
