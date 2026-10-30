@@ -3,7 +3,7 @@
   "productName": "ETTA Time Tracker",
   "publish": {
     "provider": "github",
-    "owner": "connorbasket-hash",
+    "owner": "CoGibby",
     "repo": "ETTA"
   },
   "asar": true,
