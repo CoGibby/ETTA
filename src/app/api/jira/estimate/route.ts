@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     }
 
     const data = await res.json();
-    const estimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }> = {};
+    const estimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string }> = {};
     for (const issue of (data.issues || [])) {
       const issueType = (issue.fields?.issuetype?.name || '').toLowerCase();
       if (issueType === 'epic' || issueType === 'milestone' || issueType === 'requirement') continue;
@@ -48,7 +48,7 @@ export async function POST(request: Request) {
       const statusCategory = issue.fields?.status?.statusCategory?.key || '';
       const statusName = issue.fields?.status?.name || '';
       const isOpen = statusCategory !== 'done';
-      estimates[key] = { remaining, hasEstimate, issueType, isOpen, statusName };
+      estimates[key] = { remaining, hasEstimate, issueType, isOpen, statusName, name: issue.fields?.summary || '' };
     }
 
     return NextResponse.json({ success: true, estimates });

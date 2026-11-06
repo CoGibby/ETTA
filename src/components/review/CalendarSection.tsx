@@ -184,12 +184,14 @@ export function CalendarSection({
   refreshToken,
   onDataChange,
   initialSelectedDate,
+  issueNames,
 }: {
   open: boolean;
   setOpen: (v: boolean) => void;
   refreshToken: number;
   onDataChange?: () => void;
   initialSelectedDate?: Date;
+  issueNames?: Record<string, string>;
 }) {
   const [weekOffset, setWeekOffset] = useState(0);
   const [selIdx, setSelIdx] = useState(0);
@@ -803,7 +805,16 @@ export function CalendarSection({
                                 </td>
                                 <td>
                                   {st === 'cloud' || st === 'partial' ? (
-                                    <span className="issue-key">{e.jira_issue || mapping?.jiraIssue || '--'}</span>
+                                    <>
+                                      <span className="issue-key">{e.jira_issue || mapping?.jiraIssue || '--'}</span>
+                                      {(() => {
+                                      const pushedKey = (e.jira_issue || mapping?.jiraIssue || '').toUpperCase();
+                                      const pushedName = pushedKey ? issueNames?.[pushedKey] : undefined;
+                                      return pushedName ? (
+                                        <div className="text-muted" style={{ fontSize: 12, marginTop: 2 }}>{pushedName}</div>
+                                      ) : null;
+                                      })()}
+                                    </>
                                   ) : (
                                     <>
                                       <JiraInput entry={e} suggestedIssue={mapping?.jiraIssue} helperText={mapping ? 'Auto-filled from your previous entry for this meeting.' : 'Review the Jira issue before pushing.'} onSave={(issue) => saveJiraForEntry(e, issue)} onClear={clearJiraIssue} />

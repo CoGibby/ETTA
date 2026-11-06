@@ -122,10 +122,11 @@ export default function ReviewPage() {
   const [loading, setLoading] = useState(true);
   const [weekStats, setWeekStats] = useState({ captured: 0, meetings: 0, pushed: 0, review: 0, autoCoded: 0, total: 0 });
   const [weekStatuses, setWeekStatuses] = useState({ inJira: 0, ready: 0, needsCode: 0 });
+  const [weekBreakdown, setWeekBreakdown] = useState<{ key: string; name: string; minutes: number; pushed: number }[]>([]);
   const [hasData, setHasData] = useState(false);
   const [dataRefreshToken, setDataRefreshToken] = useState(0);
   const hasLoadedOnceRef = useRef(false);
-  const [estimates, setEstimates] = useState<Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>>({});
+  const [estimates, setEstimates] = useState<Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string }>>({});
   const [historySuggestions, setHistorySuggestions] = useState<HistorySuggestion[]>([]);
   const statsRequestRef = useRef(0);
   const estimatesRef = useRef(estimates);
@@ -209,9 +210,9 @@ export default function ReviewPage() {
         });
         const data = await res.json();
         if (!cancelled && data.success && data.estimates) {
-          const upperEstimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }> = {};
+          const upperEstimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string }> = {};
           for (const [k, v] of Object.entries(data.estimates)) {
-            const ev = v as { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string };
+            const ev = v as { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string };
             upperEstimates[k.toUpperCase()] = ev;
           }
           setEstimates((prev) => ({ ...prev, ...upperEstimates }));
@@ -219,14 +220,52 @@ export default function ReviewPage() {
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows]);
+
+  // Fetch issue names for the weekly breakdown keys (no summary shown without a name)
+  useEffect(() => {
+    const keysToFetch = weekBreakdown.map((b) => b.key).filter((k) => !(k in estimatesRef.current));
+    if (keysToFetch.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/jira/estimate', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ keys: keysToFetch }),
+        });
+        const data = await res.json();
+        if (!cancelled && data.success && data.estimates) {
+          const upperEstimates: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string }> = {};
+          for (const [k, v] of Object.entries(data.estimates)) {
+            const ev = v as { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string };
+            upperEstimates[k.toUpperCase()] = ev;
+          }
+          setEstimates((prev) => ({ ...prev, ...upperEstimates }));
+        }
+      } catch { /* Names fall back to favorites or keys. */ }
+    })();
+    return () => { cancelled = true; };
+  }, [weekBreakdown]);
 
   const activeKeys = useMemo(() => new Set(rows.map((r) => r.key)), [rows]);
   const unassigned = useMemo(
     () => favorites.filter((f) => !activeKeys.has(f.jira_key)).map((f) => ({ id: f.id, key: f.jira_key, name: f.short_name || f.jira_name })),
     [favorites, activeKeys]
   );
+
+  const issueNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const [k, v] of Object.entries(estimates)) {
+      if (v.name) map[k.toUpperCase()] = v.name;
+    }
+    for (const favorite of favorites) {
+      map[favorite.jira_key.toUpperCase()] = favorite.short_name || favorite.jira_name;
+    }
+    for (const row of weekBreakdown) {
+      if (row.name && !map[row.key]) map[row.key] = row.name;
+    }
+    return map;
+  }, [estimates, favorites, weekBreakdown]);
 
   const fetchStats = useCallback(async () => {
     const requestId = ++statsRequestRef.current;
@@ -349,6 +388,22 @@ export default function ReviewPage() {
         ready: sharedStats.readyCount,
         needsCode: sharedStats.needsCodeCount,
       });
+
+      // Weekly per-issue breakdown (key + name + minutes) mirroring the
+      // skills-library reporting format merged for ETTA-118.
+      const breakdownMap = new Map<string, { key: string; name: string; minutes: number; pushed: number }>();
+      for (const entry of weekEntries) {
+        const issueKey = entry.jira_issue || getMappedJiraIssue(entry, calendarMappings)?.jiraIssue || '';
+        if (!issueKey) continue;
+        const upperKey = issueKey.toUpperCase();
+        const current = breakdownMap.get(upperKey) || { key: upperKey, name: entry.jira_name || '', minutes: 0, pushed: 0 };
+        const entryMinutes = mins(entry);
+        current.minutes += entryMinutes;
+        if (entry.status === 'pushed' || (entry.status === 'pending' && coverageOf(entry) !== 'none')) current.pushed += entryMinutes;
+        if (!current.name && entry.jira_name) current.name = entry.jira_name;
+        breakdownMap.set(upperKey, current);
+      }
+      setWeekBreakdown(Array.from(breakdownMap.values()).sort((a, b) => b.minutes - a.minutes));
 
       // Filter Tempo to just the selected day for the per-day allocation logic
       const selectedTempoEntries = weekTempoEntries.filter((t) => {
@@ -785,7 +840,36 @@ export default function ReviewPage() {
         </button>
       </div>
 
-      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} refreshToken={dataRefreshToken} onDataChange={fetchStats} initialSelectedDate={selectedDate} />
+      {weekBreakdown.length > 0 && (
+        <div className="card" style={{ padding: 16, marginBottom: 10 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: 'var(--navy)', marginBottom: 8 }}>This week by issue</h3>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="table" style={{ minWidth: 460 }}>
+              <thead>
+                <tr><th>Issue</th><th style={{ width: 110 }}>Time</th><th style={{ width: 110 }}>In Jira</th></tr>
+              </thead>
+              <tbody>
+                {weekBreakdown.map((row) => {
+                  const name = issueNames[row.key] || row.name || '';
+                  const fmt = (m: number) => (m >= 60 ? Math.floor(m / 60) + 'h ' + (m % 60) + 'm' : m + 'm');
+                  return (
+                    <tr key={row.key}>
+                      <td>
+                        <span className="issue-key">{row.key}</span>
+                        {name && <span className="text-muted" style={{ marginLeft: 8 }}>{name}</span>}
+                      </td>
+                      <td>{fmt(row.minutes)}</td>
+                      <td className="text-muted">{fmt(row.pushed)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <CalendarSection open={calendarOpen} setOpen={setCalendarOpen} refreshToken={dataRefreshToken} onDataChange={fetchStats} initialSelectedDate={selectedDate} issueNames={issueNames} />
 
       <AddProjectModal
         open={addOpen}

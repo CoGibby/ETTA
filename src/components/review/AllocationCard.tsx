@@ -65,7 +65,7 @@ interface Props {
   onDeleteUnassigned: (id: number, key: string) => void;
   onAddProject: () => void;
   selectedDateKey?: string;
-  estimates?: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string }>;
+  estimates?: Record<string, { remaining: number; hasEstimate: boolean; issueType: string; isOpen: boolean; statusName: string; name: string }>;
   onPushed?: () => void | Promise<void>;
 }
 
