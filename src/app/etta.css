@@ -5,6 +5,7 @@
 .apptop-in{max-width:1240px;margin:0 auto;display:flex;align-items:center;gap:22px;padding:0 22px;height:58px;flex-wrap:wrap;}
 .apptop .logo{font-size:15px;font-weight:700;letter-spacing:.2px;white-space:nowrap;}
 .apptop .logo small{font-weight:400;opacity:.7;font-size:13px;}
+.apptop .version-chip{font-size:11px;font-weight:600;color:var(--slate-400,#64748b);background:rgba(100,116,139,.12);border-radius:6px;padding:2px 7px;white-space:nowrap;}
 .apptop nav{display:flex;gap:4px;flex:1;}
 .apptop nav a{color:#cfe0ea;text-decoration:none;font-weight:600;font-size:13px;padding:10px 14px;border-radius:8px;cursor:pointer;}
 .apptop nav a:hover{background:rgba(255,255,255,.08);color:#fff;}

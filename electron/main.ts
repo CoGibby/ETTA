@@ -31,8 +31,8 @@ for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
 let autoUpdater: AppUpdater | null = null;
 try {
   autoUpdater = require("electron-updater").autoUpdater;
-} catch {
-  appendServerLog("\nelectron-updater is not packaged in this build; updates disabled.\n");
+} catch (error) {
+  appendServerLog(`\nelectron-updater failed to load; updates disabled. ${String(error)}\n`);
 }
 const updaterEnabled = !isDevelopment && autoUpdater !== null && !app.getVersion().includes("-ppmo");
 if (updaterEnabled && autoUpdater) {

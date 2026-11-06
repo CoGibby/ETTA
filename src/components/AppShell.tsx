@@ -54,6 +54,14 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const { connected, checking, refresh, setConnecting } = useConnection();
   const [showConnect, setShowConnect] = useState(false);
+  const [appVersion, setAppVersion] = useState('');
+
+  useEffect(() => {
+    fetch('/api/version')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data?.version && setAppVersion(data.version))
+      .catch(() => {});
+  }, []);
 
   const onboarding = !connected && !checking;
 
@@ -81,6 +89,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="apptop">
         <div className="apptop-in">
           <span className="logo">ETTA <small>{'\u00b7'} Time Tracker</small></span>
+          {appVersion && <span className="version-chip" title="ETTA version">{appVersion}</span>}
           <nav>
             {tabs.map((tab) => {
               const isActive = tab.href === '/' ? (onboarding || pathname === '/') : pathname === tab.href;
