@@ -1,6 +1,6 @@
 {
   "name": "etta-time-tracker",
-  "version": "0.16.0-insider.3",
+  "version": "0.16.0-insider.4",
   "description": "ETTA desktop time-tracking application for Outlook and Jira.",
   "author": "UC San Diego",
   "private": true,
@@ -70,3 +70,4 @@
     "wait-on": "^8.0.5"
   }
 }
+

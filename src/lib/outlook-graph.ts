@@ -375,6 +375,23 @@ export function graphDatetimeToLocal(iso: string): string {
   return `${y}-${m}-${d}T${h}:${min}:${s}`;
 }
 
+// Graph returns calendar dateTime strings WITHOUT an offset and reports the
+// zone in start.timeZone. Calendar requests send `Prefer: outlook.timezone`
+// pinned to this machine's zone, so an offset-less string is wall-clock local
+// time and Date() parsing is correct. If Graph answers in UTC instead
+// (offset-less string with timeZone "UTC"), convert explicitly rather than
+// mislabeling UTC clock time as local time.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function graphEventDateTimeToLocal(dateTime: string, timeZone?: string): string {
+  if (!dateTime) return '';
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/.test(dateTime.trim());
+  if (!hasOffset && String(timeZone || '').trim().toUpperCase() === 'UTC') {
+    const normalized = dateTime.includes('.') ? dateTime.replace(/0+$/, '').replace(/\.$/, '') : dateTime;
+    return graphDatetimeToLocal(`${normalized}Z`);
+  }
+  return graphDatetimeToLocal(dateTime);
+}
+
 // ---------- Graph API client ----------
 
 interface GraphItem {
@@ -397,8 +414,11 @@ async function graphHeaders(): Promise<Record<string, string>> {
 
 // Graph API items are dynamic payloads; callers narrow the fields they use.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function paginate(url: string): Promise<any[]> {
+async function paginate(url: string, prefer?: string): Promise<any[]> {
   const headers = await graphHeaders();
+  if (prefer) {
+    headers.Prefer = prefer;
+  }
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const all: any[] = [];
   let currentUrl = url;
@@ -440,8 +460,14 @@ export async function fetchSentEmails(
   endDate: string,
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<GraphItem[]> {
-  const startIso = `${startDate}T00:00:00Z`;
-  const endIso = `${endDate}T23:59:59Z`;
+  // sentDateTime is UTC; build the window from true local midnights so
+  // early-morning emails on the start date and late-day emails on the end
+  // date are both included.
+  const windowStart = new Date(`${startDate}T00:00:00`);
+  const windowEnd = new Date(`${endDate}T00:00:00`);
+  windowEnd.setDate(windowEnd.getDate() + 1);
+  const startIso = windowStart.toISOString();
+  const endIso = windowEnd.toISOString();
   const filterQuery = `sentDateTime ge ${startIso} and sentDateTime lt ${endIso}`;
   const select = encodeURIComponent('subject,body,sentDateTime,conversationId');
   const url = `https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$filter=${encodeURIComponent(filterQuery)}&$select=${select}&$top=50&$orderby=sentDateTime%20desc`;
@@ -527,7 +553,14 @@ function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
   const response = event.responseStatus?.response || '';
   if (event.isOrganizer) return true;
   if (response === 'accepted' || response === 'organizer') return true;
-  return includeTentative && response === 'tentative';
+  if (includeTentative) {
+    // Graph never emits a bare "tentative" response: it uses
+    // "tentativelyAccepted", and unanswered events whose calendar shows
+    // "Tentative" report "notResponded".
+    if (response === 'tentative' || response === 'tentativelyAccepted') return true;
+    if (response === 'notResponded' && String(event.showAs || '').toLowerCase() === 'tentative') return true;
+  }
+  return false;
 }
 
 export async function fetchCalendarEvents(
@@ -536,16 +569,23 @@ export async function fetchCalendarEvents(
   includeTentative: boolean,
   onProgress?: (current: number, total: number, message: string) => void
 ): Promise<GraphItem[]> {
-  const startIso = `${startDate}T00:00:00Z`;
-  // End date is exclusive in Graph calendarView
-  const endDateObj = new Date(endDate + 'T00:00:00Z');
-  endDateObj.setUTCDate(endDateObj.getUTCDate() + 1);
-  const endExclusive = endDateObj.toISOString();
+  // Build the query window from true local midnights so late-day events on the
+  // range edges are never cut off by a UTC boundary.
+  const windowStart = new Date(`${startDate}T00:00:00`);
+  const windowEnd = new Date(`${endDate}T00:00:00`);
+  windowEnd.setDate(windowEnd.getDate() + 1);
+  const startIso = windowStart.toISOString();
+  const endExclusive = windowEnd.toISOString();
+
+  // Ask Graph for wall-clock times in this machine's zone so the offset-less
+  // dateTime strings parse as local time directly.
+  const machineZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const prefer = `outlook.timezone="${machineZone}"`;
 
   const select = encodeURIComponent('subject,body,start,end,responseStatus,isOrganizer,isCancelled,isAllDay,iCalUId,seriesMasterId,attendees,categories,onlineMeeting,showAs');
   const url = `https://graph.microsoft.com/v1.0/me/calendarView?startDateTime=${encodeURIComponent(startIso)}&endDateTime=${encodeURIComponent(endExclusive)}&$select=${select}&$top=50`;
 
-  const events = await paginate(url);
+  const events = await paginate(url, prefer);
   const items: GraphItem[] = [];
   let scanned = 0;
 
@@ -557,12 +597,12 @@ export async function fetchCalendarEvents(
 
     if (!includeCalendarEvent(event, includeTentative)) continue;
 
-    const startRaw = event.start?.dateTime || '';
+    const startRaw = graphEventDateTimeToLocal(event.start?.dateTime || '', event.start?.timeZone);
     const meetingLocal = graphDatetimeToLocal(startRaw);
     const dateOnly = meetingLocal.slice(0, 10);
     if (dateOnly < startDate || dateOnly > endDate) continue;
 
-    const endRaw = event.end?.dateTime || '';
+    const endRaw = graphEventDateTimeToLocal(event.end?.dateTime || '', event.end?.timeZone);
     let durationMinutes = 60;
     if (startRaw && endRaw) {
       try {
