@@ -381,7 +381,7 @@ export function graphDatetimeToLocal(iso: string): string {
 // time and Date() parsing is correct. If Graph answers in UTC instead
 // (offset-less string with timeZone "UTC"), convert explicitly rather than
 // mislabeling UTC clock time as local time.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
 function graphEventDateTimeToLocal(dateTime: string, timeZone?: string): string {
   if (!dateTime) return '';
   const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/.test(dateTime.trim());

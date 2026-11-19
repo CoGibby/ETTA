@@ -30,6 +30,9 @@ for (const [key, value] of Object.entries(ENTRA_DEFAULTS)) {
 // goes live for insider/public versions.
 let autoUpdater: AppUpdater | null = null;
 try {
+  // Lazy CJS require is intentional: keeps startup safe when the updater is
+  // not packaged (handoff builds); a static import would crash the app instead.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
   autoUpdater = require("electron-updater").autoUpdater;
 } catch (error) {
   appendServerLog(`\nelectron-updater failed to load; updates disabled. ${String(error)}\n`);
