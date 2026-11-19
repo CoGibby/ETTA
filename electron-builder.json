@@ -19,6 +19,7 @@
     "node_modules/electron-updater/**/*",
     "node_modules/builder-util-runtime/**/*",
     "node_modules/argparse/**/*",
+    "node_modules/debug/**/*",
     "node_modules/fs-extra/**/*",
     "node_modules/graceful-fs/**/*",
     "node_modules/js-yaml/**/*",
@@ -26,6 +27,8 @@
     "node_modules/lazy-val/**/*",
     "node_modules/lodash.escaperegexp/**/*",
     "node_modules/lodash.isequal/**/*",
+    "node_modules/ms/**/*",
+    "node_modules/sax/**/*",
     "node_modules/semver/**/*",
     "node_modules/tiny-typed-emitter/**/*",
     "node_modules/universalify/**/*"

@@ -1,6 +1,6 @@
 {
   "name": "etta-time-tracker",
-  "version": "0.16.0-insider.4",
+  "version": "0.16.0-insider.5",
   "description": "ETTA desktop time-tracking application for Outlook and Jira.",
   "author": "UC San Diego",
   "private": true,
@@ -18,11 +18,10 @@
     "package": "npm run build && electron-builder --dir",
     "package:win": "npm run build && electron-builder --win nsis --publish never",
     "release:win": "npm run build && electron-builder --win nsis --publish always",
-    "package:mac": "npm run build && electron-builder --mac --publish never",
+    "package:mac": "npm run build && electron-builder --mac",
     "release:mac": "npm run build && electron-builder --mac --publish always",
     "package:mac:universal": "npm run build && electron-builder --mac --universal",
     "package:win:internal": "npm run build && electron-builder --win nsis --config.win.signAndEditExecutable=false",
-    "package:mac": "npm run build && electron-builder --mac",
     "lint": "eslint",
     "typecheck": "tsc --noEmit && tsc -p electron/tsconfig.json --noEmit",
     "pretest": "node scripts/clean-test-db.mjs",
@@ -70,4 +69,3 @@
     "wait-on": "^8.0.5"
   }
 }
-
