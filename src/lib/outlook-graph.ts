@@ -553,12 +553,13 @@ function includeCalendarEvent(event: any, includeTentative: boolean): boolean {
   const response = event.responseStatus?.response || '';
   if (event.isOrganizer) return true;
   if (response === 'accepted' || response === 'organizer') return true;
+  // An invitation without a response is not a decline: sync it so the user
+  // still sees (and can correct) meetings they have not accepted yet.
+  if (response === 'notResponded' || response === '') return true;
   if (includeTentative) {
     // Graph never emits a bare "tentative" response: it uses
-    // "tentativelyAccepted", and unanswered events whose calendar shows
-    // "Tentative" report "notResponded".
+    // "tentativelyAccepted".
     if (response === 'tentative' || response === 'tentativelyAccepted') return true;
-    if (response === 'notResponded' && String(event.showAs || '').toLowerCase() === 'tentative') return true;
   }
   return false;
 }
