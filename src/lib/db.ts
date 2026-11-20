@@ -1,8 +1,24 @@
+import fs from 'fs';
 import Database from 'better-sqlite3';
 import { resolveDataPath } from './app-paths';
 import type { CalendarJiraMapping } from './tempo-match';
 
 const dbPath = resolveDataPath(process.env.DB_PATH, 'keywords.db');
+
+// One-generation startup backup: snapshot the database before opening it so a
+// corrupted or wiped data directory never destroys the last known good state.
+// Only refresh the backup when the live database is at least as large as the
+// previous snapshot, so an accidental wipe cannot clobber a good copy.
+try {
+  if (fs.existsSync(dbPath)) {
+    const backupPath = `${dbPath}.backup`;
+    const shouldRefresh =
+      !fs.existsSync(backupPath) || fs.statSync(dbPath).size >= fs.statSync(backupPath).size;
+    if (shouldRefresh) fs.copyFileSync(dbPath, backupPath);
+  }
+} catch {
+  // Backup is best-effort; never block startup on it.
+}
 
 const db = new Database(dbPath);
 
